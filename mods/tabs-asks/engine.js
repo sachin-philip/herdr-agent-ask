@@ -52,12 +52,14 @@ const SCHEMA = JSON.stringify({
   additionalProperties: false,
 });
 
-const OPTION = /^\s*(❯\s*)?(\d{1,2})\.\s+(.*?)\s*$/;
+const OPTION = /^\s*([>❯]\s*)?(\d{1,2})\.\s+(.*?)\s*$/;
 const RULE = /^[\s─╌═━]+$/;
 
 // Numbered options on a screen, with the cursor's line and the line under each option.
 export function parseScreen(text) {
-  const lines = (text ?? "").replace(/\r/g, "").split("\n");
+  // Some agents draw the dialog inside a box: "│ > 1. Yes".
+  const lines = (text ?? "").replace(/\r/g, "").split("\n")
+    .map((l) => l.replace(/^\s*│\s?/, "").replace(/\s*│\s*$/, ""));
   // Only the dialog at the bottom: start after the last rule above the first option run.
   let options = [], cursor = null, context = "", question = "";
   for (let i = 0; i < lines.length; i++) {
