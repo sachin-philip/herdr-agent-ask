@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Parse boxed option dialogs (`│ > 1. Yes`), so agents like CodeBuddy show clickable options.
+
 ## 0.3.0 · 2026-11-10
 
 - **Flat spaces list** (PR #3, thanks paragbaxi). `group_spaces_by_machine: false` in
