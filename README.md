@@ -52,6 +52,8 @@ issue tracker to ask for more; Dismiss keeps it away, and it goes by itself once
 shows "N questions in one dialog" with `Open terminal` and never presses a key for it: answer
 those in the terminal. (A step-by-step flow from the card is in PR #6.)
 
+![A two-question wizard in the terminal and its card: "2 questions in one dialog: Colour · Size. Answer them in the terminal."](docs/wizard-card.png)
+
 **When an answer does not land.** Codex now and then drops a pasted message. The panel checks
 whether the message started a turn; if not, it presses Enter when the text is sitting in the
 input box, or sends it once more. A card that still gets no reaction turns red with `Retry`;
