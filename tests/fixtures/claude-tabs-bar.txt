@@ -1,0 +1,18 @@
+
+  Which settings layout should the demo app use when someone opens it for the first time on a small laptop screen?
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Layout  ☐ Themes  ☐ Name  ✔ Submit  →
+
+│ Which settings layout should the demo app use when someone opens it for the first time on a small laptop screen?
+
+❯ 1. One long page with every setting grouped under clear headings
+     Simple to scan, though the page grows long as more settings arrive
+  2. Tabs across the top, one for each group of settings
+     Short pages, but a setting can hide in a tab nobody opens
+  3. A search box first, with the most used settings listed below it
+     Quick for people who know what they want, slower for those who browse
+  4. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

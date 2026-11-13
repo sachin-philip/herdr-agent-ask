@@ -120,7 +120,7 @@ test("a wizard on screen: no key is pressed, the card becomes the notice", async
   assert.equal(a.calls.some((c) => c.startsWith("keys")), false, "nothing pressed");
 });
 
-test("the engine reads a wizard off the screen into the notice card", async () => {
+test("a wizard whose tabs can't be read becomes the notice card, and is left on its first tab", async () => {
   const a = agent("t1", { state: "blocked", screen: fixture("claude-wizard") });
   update((s) => { s.asks = [{ id: "t1:4:w", address: "t1", turn: 4, state: "pending", kind: "DECISION", source: "report", question: "Which colour?", options: [{ n: 1, label: "Green (Recommended)" }], msg: "x" }]; });
   const e = Object.assign(new Engine(), { config: { classify: "off" } });
@@ -128,4 +128,49 @@ test("the engine reads a wizard off the screen into the notice card", async () =
   const c = state("t1:4:w");
   assert.equal(c.wizard, true);
   assert.deepEqual(c.options, []);
+  const keys = a.calls.filter((x) => x.startsWith("keys"));
+  assert.deepEqual(keys, ["keys t1 right", "keys t1 left"], "looked at the next tab, then went back");
+});
+
+// The wizard's second tab, as Claude Code draws it after →.
+const sizeTab = () => fixture("claude-wizard").replace("☐ Colour  ☐ Size", "☒ Colour  ☐ Size").replace(/\nWhich colour\?\n[\s\S]*?  4\. Type something\./,
+  "\nWhich size?\n\n❯ 1. Small\n     Small size.\n  2. Medium (Recommended)\n     Recommended default size.\n  3. Large\n     Large size.\n  4. Type something.");
+
+test("the engine reads every tab of a wizard into one card, and goes back to the first", async () => {
+  const a = agent("t1", { state: "blocked", screen: fixture("claude-wizard") });
+  const first = a.screen;
+  a.onKeys = (args) => { if (args.includes("right")) a.screen = sizeTab(); if (args.includes("left")) a.screen = first; };
+  update((s) => { s.asks = [{ id: "t1:4:w", address: "t1", turn: 4, state: "pending", kind: "DECISION", source: "report", question: "Which colour?", options: [{ n: 1, label: "Green (Recommended)" }], msg: "x" }]; });
+  const e = Object.assign(new Engine(), { config: { classify: "off" } });
+  e.enrich("t1:4:w", cx); await cx.last;
+  const c = state("t1:4:w");
+  assert.equal(c.delivery, "tabs");
+  assert.equal(c.wizard, undefined);
+  assert.deepEqual(c.questions.map((q) => q.text), ["Which colour?", "Which size?"]);
+  assert.deepEqual(c.questions.map((q) => q.recommended), [0, 1]);
+  assert.equal(c.question, "2 questions: Colour · Size");
+  assert.equal(a.screen, first, "left on the first tab");
+});
+
+test("a tabs card is answered tab by tab, then submitted", async () => {
+  const a = agent("t1", { state: "blocked", screen: fixture("claude-wizard") }); a.msg = "answer: Which colour?";
+  H.terminals[0].status.msg = a.msg; H.terminals[0].status.state = "blocked";
+  const first = a.screen, review = "←  ☒ Colour  ☒ Size  ✔ Submit  →\n\nReview your answers\n\n ● Which colour?\n   → Red\n ● Which size?\n   → Medium\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n";
+  a.onKeys = (args) => {
+    const k = args[args.length - 1];
+    if (a.screen === first && k === "2") a.screen = sizeTab();
+    else if (a.screen !== first && a.screen !== review && k === "2") a.screen = review;
+    else if (a.screen === review && k === "1") { a.screen = "⏺ User answered Claude's questions:\n"; a.state = "working"; a.msg = ""; }
+  };
+  const ask = { id: "t1:4:tabs", address: "t1", turn: 4, state: "pending", kind: "DECISION", delivery: "tabs", msg: a.msg, agent: "a", space_name: "S", cwd: "/tmp/x",
+    question: "2 questions: Colour · Size", options: [],
+    questions: [{ header: "Colour", text: "Which colour?", options: [{ n: 1, label: "Green (Recommended)" }, { n: 2, label: "Red" }, { n: 3, label: "Blue" }], recommended: 0, multi: false, other: 4 },
+      { header: "Size", text: "Which size?", options: [{ n: 1, label: "Small" }, { n: 2, label: "Medium (Recommended)" }, { n: 3, label: "Large" }], recommended: 1, multi: false, other: 4 }] };
+  update((s) => { s.asks = [ask]; });
+  const p = panel(); p.drafts = { [ask.id]: { 0: { text: "Red", n: [2] }, 1: { text: "Medium", n: [2] } } };
+  p.sendTabs(ask, cx); await cx.last;
+  const c = state(ask.id);
+  assert.equal(c.state, "delivered", c.error ?? "");
+  assert.equal(c.answer, "Colour → Red · Size → Medium");
+  assert.deepEqual(a.calls.filter((x) => x.startsWith("keys")), ["keys t1 2", "keys t1 2", "keys t1 1"]);
 });

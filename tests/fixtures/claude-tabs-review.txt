@@ -1,0 +1,22 @@
+
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Haiku 5.5 · Claude Ultra
+ ▝▝   ▝▝   ~/Code/labs/demo
+
+
+❯ Use the AskUserQuestion tool once, with three questions in the one call. Question 1 (header Colour): which colour? options Red, Green, Blue; recommend Green. Question 2 (header Toppings,
+  multiSelect true): which toppings? options Cheese, Basil, Olives. Question 3 (header Size): which size? options Small, Large. Then reply with the answers in one line and stop.
+
+  Which colour?
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Colour  ☐ Toppings  ☐ Size  ✔ Submit  →
+
+Review your answers
+
+⚠ You have not answered all questions
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

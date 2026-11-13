@@ -41,13 +41,21 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
      `DECISION` on `t.accent`, `QUESTION` on `t.working`, `STOPPED` on `t.blocked`, `UNCLEAR` on `t.dim`; then the context
      line (the agent's last prose line this turn) in `t.dim`: one line cut with an ellipsis; a
      click on the row opens it in full, running on from the chip with its next lines at the
-     card's edge, and another click closes it.
+     card's edge, and another click closes it. At the row's end, `More` (`Less` when open) when
+     the agent's last message says more than the card. Open, it shows that message (its last 60
+     lines) under the row on `t.background`, then up to 8 of its links as `↗ <url>` rows in
+     `t.accent`; a click opens the link (`cx.open_url`, http(s) only).
   3. the question, 13 px, wrapping.
   4. one row per option: an 18 px number badge, the label verbatim (wrapping), `recommends` in
      `t.accent` on the option the agent recommended (its border is `t.accent` too), and the
      option's description under it in `t.dim`, wrapping.
-  5. actions, 26 px: `Other answer` (toggles a text input; Enter sends), `Open terminal`, and
-     `Dismiss` at the right. A failed card shows the error in `t.blocked` and a `Retry` button.
+  5. actions, 26 px: `Other answer` (toggles a box under the card: a textarea of 2 to 8 lines,
+     `Send`, `Cancel` and the hint `Enter: new line · ⌘Enter: send`), `Take recommended` while
+     a question with a recommendation has no answer (`Recommended for the rest` once one has),
+     `No, because…` on an `APPROVAL` whose dialog says `Tab to amend` (its box sends with
+     `Send no`), `Open terminal`, and `Dismiss` at the right. Each card keeps its own boxes and
+     their half-typed text until sent. A failed card shows the error in `t.blocked` and a
+     `Retry` button.
 - Under the cards, a foldable `Answered N` list: one row (26 px or taller) per answered, stale
   or failed ask: a check (or x), the agent (one line, at most 90 px, in full on hover), `→ answer`
   or the note (`Resolved in terminal`, `Agent closed`), wrapping, the age. Clicking a row
@@ -55,7 +63,11 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
 - A card for a message with several questions lists them as numbered rows under a one-line
   summary. Clicking a row unfolds the choices the agent gave for that question (its recommended
   one marked) and an `Other answer…` line; a pick turns the row's badge `t.accent` and shows
-  `→ <answer>` under it. `Send answers (k/n)` appears once something is drafted.
+  `→ <answer>` under it. `Send answers (k/n)` appears once something is drafted. A pick opens
+  the next unanswered question.
+- A card for a dialog with several questions (tabs) lists them the same way, each under its
+  header. A pick-any question shows ☐/☑ per option, `Pick any` and `Next`, and has no typed
+  answer (Claude Code takes none there). `Send answers (n/n)` appears only when all have one.
 - In the sidebar's spaces list, after a space's name: a 16 px red pill with the number of open
   questions waiting in that space (also in the narrow rail).
 - Empty: `No asks waiting in <space>. Agents show up here when they stop to ask you something.`
@@ -98,6 +110,33 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
 - Several questions in one message come back from the model as `questions: [{text, options,
   recommended}]` and no top-level options (`normalize()` enforces it). Picks are drafts in the
   panel; `Send answers` delivers `1. <question> → <answer>` lines as one `hc send` message.
+- Several questions in one dialog: Claude Code draws a tab bar (`←  ☐ Colour  ☐ Toppings
+  ☐ Size  ✔ Submit  →`, ☒ once answered) and its report carries only the first question.
+  `parseTabs` finds the bar (in the last 40 lines, below the person's last prompt);
+  `Engine.readTabs` presses `right` once per later tab and reads each with `parseTab`
+  (question, options with details, recommended, `multi`, the `Type something` row as `other`),
+  then `left` back to the first, waiting for the screen each time. All read: `delivery:
+  "tabs"`, `kind: DECISION`, the questions, and `3 questions: Colour · Toppings · Size` as the
+  question. A tab already answered in the terminal, or one it can't read, makes it the wizard
+  card: `wizard: true`, no options, `N questions in one dialog: … Answer them in the terminal.`
+  (from `wizardOn`), and the panel presses no key for it.
+  The classifier is never asked. One pick-any question gets a bar too and is read the same way.
+- Sending a tabs card (`sendTabs`): every question needs an answer and the dialog must still be
+  up. The dialog goes back to its first tab if it isn't there (stepping `up` off a `Type
+  something` row first). Then per question: a pick presses its number (Claude Code moves on by
+  itself); pick-any presses each option whose tick differs, then `right`; a typed answer presses
+  the `Type something` number and `hc send --force`s the text. After each, the next question
+  (or, after the last, the review page) must show within 6 s, else `failed` naming the question.
+  The review page must not say `not answered all`; then `Submit answers`. Retry sends the kept
+  answers again from the first tab. `asks.accept` on a tabs card takes every question's
+  recommended (else first) option.
+- `No, because…`: the cursor goes to `No` (`down`/`up` from where `optionRows` reads it), then
+  `tab` (Claude Code's `Tab to amend`), then `hc send --force` with the reason. Delivered when the
+  turn moves on or the dialog changes.
+- `hc send` refuses a terminal whose output has not settled (`still starting`, e.g. right after a
+  key the panel pressed): typed answers try again every 1.5 s, up to six times.
+- A waiting card's `agent` and `space_name` follow `agents()` on every tick, so a renamed tab
+  renames its card, and the decisions log uses the name at answer time.
 - Other agents: numbered options on screen (`1.`, `❯ 2.` …) make a `DECISION` (`APPROVAL` when a
   `Yes` and a `No` are among them). With none, and `classify` not `off`, `claude -p
   --output-format json --json-schema … --model haiku` classifies the last 45 lines; its options
@@ -160,7 +199,7 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   `hc read <t> --json --lines 100`), and GitHub Actions runs it on every PR.
 - `mods/tabs-asks/engine.js`: `Engine.tick` (diff `terminals()` against the shared state;
   finished-turn pass; failed-card healing), `Engine.enrich` (screen read, model fallback),
-  `Engine.checkTurn`, `Engine.classify` (two prompt modes, `dialog` and `message`),
+  `Engine.readTabs` (with `waitTab`), `Engine.checkTurn`, `Engine.classify` (two prompt modes, `dialog` and `message`),
   `Engine.backend` / `Engine.codexBin` / `askClaude` / `askCodex`, `Engine.recheck`
   (`tabs-asks.recheck`).
   With no CLI, `backend()` puts one `NOTICE` card (`notice: true`, no space, shown in every
@@ -177,9 +216,12 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   headers when `group_spaces_by_machine` is `false` in asks.json (read in `init`, every 30 s),
   and `tail` then ends a row from another machine with its name unless `show_machine_names` is
   `false`.
-- `mods/asks/main.js`: the panel. `answer`, `sendText`, `deliver`, `log`, `retry`, `open`, `card`,
-  `receipt`, `render`. One `InputState` made in `init`, shown under whichever card has
-  `Other answer` open.
+- `mods/asks/main.js`: the panel. `answer`, `sendText`, `sendDrafts`, `sendTabs`, `sendReason`,
+  `recommend`, `wizard`, `deliver`, `retry`, `open`, `card`, `question`, `receipt`, `render`. Text
+  boxes are `TextareaState`s made on click (never in `render`), one per card and purpose (`id`,
+  `id:i` per question, `id:no`) in `this.boxes`, kept until sent.
+- `mods/asks/dialog.js` = `mods/tabs-asks/dialog.js`: `parseTabs`, `parseTab`, `optionRows`, the
+  AskUserQuestion tabs and a dialog's rows, pure (`tests/dialog.test.mjs`).
 - `mods/asks/state.js` = `mods/tabs-asks/state.js`: the shared record under
   `shared("asks.state")` (`{schema: 1, asks: [...]}`), `update(fn)` (writes only on change),
   `loadConfig()` from `~/.config/herdr-app/asks.json`, `statusOf`/`reportOf`/`msgOf` (status may
@@ -187,8 +229,9 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   terminal's title, else the program).
 - Ask record: `id, address, pane, space, space_name, agent, program{key,name,icon,tint}, app, cwd,
   turn, msg, detected_at, state (pending|sending|delivered|failed|stale|dismissed), kind, question,
-  options[{n,label,detail}], recommended, questions[{text, options[{n,label}], recommended}],
-  context, raw, source (report|screen|model|…), confidence, enriched, delivery (keys|send),
+  options[{n,label,detail}], recommended, questions[{header?, text, options[{n,label,detail?}],
+  recommended, multi?, other?}], context, message, amend, raw, source (report|screen|model|…),
+  confidence, enriched, delivery (keys|send|tabs),
   answer, chosen, answered_at, ended_at, error, note`.
 - `herdr` functions: `terminals`, `agents`, `spaces`, `focused`, `panes`, `layout`, `shared`,
   `setShared`, `run` (`layout.show|hide|select`, `pane.focus`, `agent.focus`), `hc` (`read`,
@@ -228,7 +271,8 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
 - The `❯` cursor line's label is what the person has typed into Claude Code's free-text option
   (e.g. `4. default gre`); it is parsed as an option only when the numbering runs from 1, and the
   report's options win over the screen's labels.
-- The context line is the last `⏺` prose line after the last `❯` prompt; tool lines
+- The context line is the last `⏺` (macOS) or `●` (Linux) prose line after the last `❯` prompt
+  (a dialog's cursor line, `❯ 1. Red`, is not a prompt); tool lines
   (`Write(`, `Bash(` …) and `User answered` are skipped. Before the screen is read the card says
   `Reading the dialog…`.
 - `exec` has a 30 s limit; Haiku answers in 2–7 s. The model is never on the path for a Claude
@@ -246,6 +290,11 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   `Other answer…` input, picks are drafts in the panel (`this.drafts[ask.id][i]`, not shared
   state), and `Send answers (k/n)` sends `1. <question> → <answer>` lines as one message. A
   multi-line `hc send` reaches Claude Code as one message (bracketed paste); verified.
+- On a dialog's `Type something` row the arrow keys move the text cursor, so `left` there does
+  not change tabs: step `up` off the row first.
+- `readTabs` presses keys in the agent's terminal while it reads, about a second for three tabs.
+  Someone typing in that terminal right then would see the tabs move; it ends on the first tab.
+- The panel sends a box only on ⌘Enter (`secondary`) or `Send`; plain Enter adds a line.
 - gpui-kit style setters want a value: `.bg(cond ? x : undefined)` fails the whole re-render with
   "expected a string, got nil" (the panel then shows its last good frame with a red bar). Use
   `.when(cond, el => el.bg(x))`.
@@ -271,7 +320,11 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
 - Clicking `Red` makes the agent's screen say `→ Red` within 3 s, the card moves to `Answered`
   with `→ Red`, and `~/.config/herdr-app/decisions/<space>.md` gains the line.
 - Answering the dialog in the terminal instead turns the card into `Resolved in terminal`.
-- `Other answer` + `Tabler icons instead` + Enter: the agent reports that free-text answer.
+- `Other answer` + `Tabler icons instead` + ⌘Enter: the agent reports that free-text answer.
+- A three-question AskUserQuestion (one of them pick-any) makes one card listing all three;
+  answering each and `Send answers (3/3)` makes the agent report all three answers.
+- A permission prompt for a Write, `No, because…` + `call it b.txt instead` + `Send no`: the
+  agent asks to write `b.txt` instead.
 - A `claude --permission-mode default` agent asked to write a file shows an `APPROVAL` card
   `Do you want to create note.txt? Allow Write: …/note.txt` with options `1 Yes`, `2 Yes, and
   switch to accept edits …`, `3 No`; clicking `Yes` writes the file.

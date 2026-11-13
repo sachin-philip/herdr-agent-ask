@@ -1,0 +1,26 @@
+
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Haiku 5.5 · Claude Ultra
+ ▝▝   ▝▝   ~/Code/labs/demo
+
+
+❯ Use the AskUserQuestion tool once with one question (header Toppings, multiSelect true): which toppings? options Cheese, Basil, Olives. Then reply with the answers in one line and stop.
+
+  Which toppings?
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Toppings  ✔ Submit  →
+
+Which toppings?
+
+❯ 1. [ ] Cheese
+         Cheese topping
+  2. [ ] Basil
+         Basil topping
+  3. [ ] Olives
+         Olives topping
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

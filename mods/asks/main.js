@@ -2,9 +2,10 @@
 // answer from here. Detection lives in mods/tabs-asks (always shown); this mod shows the
 // shared state and delivers answers with hc.
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, TextareaState, Textarea } from "gpui-base";
 import { spaces, focused, run, theme, hc, exec, nextCommand, appHome } from "herdr";
 import { readState, update, stillAsking, stillIdle, liveTerminal, wizardOn, declinedOn, logAnswer, age, loadConfig } from "./state.js";
+import { parseTab, optionRows } from "./dialog.js";
 
 // How long the panel waits for the agent to react to an answer. hc holds a paste or key
 // press until nobody has typed in that terminal for ~3 s, and a turn takes a moment to start.
@@ -12,8 +13,14 @@ const SETTLE_MS = 8000;
 
 const KIND = { APPROVAL: "blocked", DECISION: "accent", QUESTION: "working", STOPPED: "blocked", UNCLEAR: "dim", NOTICE: "dim" };
 const one = (s) => (s ?? "").replace(/\s+/g, " ").trim();
+const bare = (label) => label.replace(/\s*\(recommended\)\s*$/i, "");
 // Questions of a multi-question card; older cards stored them as plain strings.
-const questionsOf = (ask) => (ask.questions ?? []).map((q) => typeof q === "string" ? { text: q, options: [], recommended: null } : { text: q.text, options: q.options ?? [], recommended: q.recommended ?? null });
+const questionsOf = (ask) => (ask.questions ?? []).map((q) => typeof q === "string" ? { text: q, options: [], recommended: null } : { ...q, options: q.options ?? [], recommended: q.recommended ?? null });
+// A drafted answer: { text } typed, or { text, n: [numbers] } picked. Older drafts were strings.
+const draftOf = (d) => d == null ? null : typeof d === "string" ? { text: d } : d;
+// Web links in what the agent said, for "More".
+const linksIn = (text) => [...new Set(((text ?? "").match(/https?:\/\/[^\s<>"'`]+/g) ?? []).map((u) => u.replace(/[.,;:!?)\]]+$/, "")))];
+const HINT = "Enter: new line · ⌘Enter: send";
 
 function iconOf(p, size, color) {
   if (!p?.icon) return div().size(size).rounded(4).bg(color).opacity(0.3);
@@ -24,30 +31,29 @@ export default class Asks extends View {
   init(_props, cx) {
     this.all = localStorage.getItem("scope") === "all";
     this.showAnswered = false;
-    this.other = null; this.otherText = "";
+    // Typed answers: one box per card (key: ask.id), per question (`${id}:${i}`) and for the
+    // reason with a no (`${id}:no`), so text half typed in one card stays in that card.
+    this.boxes = {};
     // Multi-question cards: which question is unfolded, and the answers drafted so far
-    // ({ [ask.id]: { [index]: text } }). Sent together with "Send answers".
-    this.openQ = null; this.otherQ = null; this.drafts = {}; this.openCtx = new Set();
-    this.input = InputState.new({ placeholder: "Type a different answer, Enter to send" });
-    this.input.on("change", (_e, cx) => { this.otherText = this.input.value(); cx.notify(); });
-    this.input.on("submit", (_e, cx) => {
-      const text = this.otherText.trim();
-      if (this.otherQ) { if (text) this.draft(this.otherQ.id, this.otherQ.i, text); this.otherQ = null; this.input.set_value(""); this.otherText = ""; cx.notify(); return; }
-      const ask = readState().asks.find((a) => a.id === this.other); if (ask && text) this.sendText(ask, text, cx);
-    });
+    // ({ [ask.id]: { [index]: draft } }). Sent together with "Send answers".
+    this.openQ = null; this.drafts = {};
+    // Cards whose context line is open in full, and cards showing everything the agent said ("More").
+    this.openCtx = new Set(); this.more = new Set();
     this.config = null;
     const config = (cx) => cx.spawn(async (cx) => { this.config = await loadConfig(); cx.notify(); });
     config(cx);
     cx.timer.every(30000, (cx) => { config(cx); cx.notify(); });
     // Key commands ("asks.accept" in keys.json): accept answers the newest waiting ask in the
-    // shown space with the option its agent recommends (or the first, for an approval).
+    // shown space with the option its agent recommends (or the first, for an approval); a
+    // dialog of several questions gets the recommended (or first) answer to each.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         if (c === "accept") {
           const spaceId = spaces().find((s) => s.active)?.id ?? focused()?.space;
-          const ask = readState().asks.find((a) => a.state === "pending" && (this.all || a.space === spaceId) && a.options.length && a.kind !== "UNCLEAR");
-          if (ask) this.answer(ask, ask.options[ask.recommended ?? 0], cx);
+          const ask = readState().asks.find((a) => a.state === "pending" && (this.all || a.space === spaceId) && (a.options.length || a.delivery === "tabs") && a.kind !== "UNCLEAR");
+          if (ask?.delivery === "tabs") { this.recommend(ask, true); this.sendTabs(ask, cx); }
+          else if (ask) this.answer(ask, ask.options[ask.recommended ?? 0], cx);
         }
         cx.notify();
       }
@@ -61,14 +67,76 @@ export default class Asks extends View {
     if (!this.config?.debug) return;
     exec("sh", ["-c", 'printf "%s %s\n" "$(date +%H:%M:%S)" "$1" >> "$2"', "asks", String(line).slice(0, 600), `${appHome()}/asks.log`]).catch(() => {});
   }
+  find(id) { return readState().asks.find((a) => a.id === id) ?? null; }
 
-  draft(id, i, text) { (this.drafts[id] ??= {})[i] = text; this.openQ = null; }
+  // Opens the text box `key` (made on first use: a state can't be made in render).
+  // `send(text, cx)` runs on its button or ⌘Enter; Enter alone starts a new line.
+  openBox(key, placeholder, send) {
+    let b = this.boxes[key];
+    if (!b) {
+      const state = TextareaState.new({ placeholder });
+      state.set_auto_grow(2, 8);
+      b = this.boxes[key] = { state, text: "", open: false, send };
+      state.on("change", (_e, cx) => { b.text = state.value(); cx.notify(); });
+      state.on("submit", (e, cx) => { if (e?.secondary && b.text.trim()) b.send(b.text.trim(), cx); });
+    }
+    b.send = send; b.open = true;
+    b.state.focus();
+  }
+  // Folds the box away; its text stays for next time unless `clear`.
+  closeBox(key, clear) {
+    if (!this.boxes[key]) return;
+    if (clear) delete this.boxes[key]; else this.boxes[key].open = false;
+  }
+  boxOpen(key) { return Boolean(this.boxes[key]?.open); }
+  toggleBox(key, placeholder, send, cx) {
+    if (this.boxOpen(key)) this.closeBox(key, false); else this.openBox(key, placeholder, send);
+    cx.notify();
+  }
+
+  box(key, t, sendLabel) {
+    const b = this.boxes[key], ready = Boolean(b.text.trim());
+    return v_flex().w_full().gap(5)
+      .child(Textarea.new(b.state).w_full().px(10).py(6).rounded(8).border_1().border_color(t.accent).bg(t.background).text_size(12.5).text_color(t.foreground))
+      .child(h_flex().gap(6).items_center()
+        .child(h_flex().id(`bs-${key}`).h(24).px(8).gap(5).items_center().rounded(7).flex_none().text_size(11.5).border_1()
+          .border_color(t.input).bg(t.raised).text_color(ready ? t.foreground : t.dim)
+          .when(ready, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => b.send(b.text.trim(), cx)))
+          .child(svg("mods/asks/send.svg").size(12)).child(sendLabel))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(HINT))
+        .child(div().id(`bc-${key}`).flex_none().text_size(11).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { this.closeBox(key, false); cx.notify(); }).child("Cancel")));
+  }
+
+  // Keeps a question's answer (none: forgets it) and unfolds the next question still
+  // unanswered, or folds them all when every one has an answer.
+  draft(id, i, d) {
+    const ds = (this.drafts[id] ??= {});
+    if (d == null) delete ds[i]; else ds[i] = d;
+    const ask = this.find(id), n = ask ? questionsOf(ask).length : 0;
+    let next = null;
+    for (let k = 1; k <= n; k++) { const j = (i + k) % n; if (!ds[j]) { next = j; break; } }
+    this.openQ = next == null ? null : `${id}:${next}`;
+  }
+
+  // Every question still unanswered takes the answer its agent recommends; with `first`, a
+  // question without one takes its first answer (the accept key).
+  recommend(ask, first) {
+    const ds = (this.drafts[ask.id] ??= {});
+    questionsOf(ask).forEach((q, i) => {
+      if (ds[i]) return;
+      const j = q.recommended ?? (first && q.options.length ? 0 : null);
+      if (j != null && q.options[j]) ds[i] = { text: bare(q.options[j].label), n: [q.options[j].n] };
+    });
+    this.openQ = null;
+  }
 
   // One message with every drafted answer, numbered like the agent's questions.
   sendDrafts(ask, cx) {
+    if (ask.delivery === "tabs") return this.sendTabs(ask, cx);
     const d = this.drafts[ask.id] ?? {};
     const qs = questionsOf(ask);
-    const lines = qs.map((q, i) => d[i] ? `${i + 1}. ${q.text} → ${d[i]}` : null).filter(Boolean);
+    const lines = qs.map((q, i) => d[i] ? `${i + 1}. ${q.text} → ${draftOf(d[i]).text}` : null).filter(Boolean);
     if (!lines.length) return;
     delete this.drafts[ask.id];
     this.sendText(ask, lines.join("\n"), cx);
@@ -107,11 +175,40 @@ export default class Asks extends View {
     }
   }
 
+  // Read the screen every 200 ms until `parse(text)` passes `ok`, or the time is up; the last
+  // parse. (hc holds keys until nobody has typed in that terminal for a moment.)
+  async watch(address, parse, ok, sleep, ms = 6000) {
+    const until = Date.now() + ms;
+    let seen = null;
+    for (;;) {
+      const r = await hc(["read", address, "--json"]);
+      if (r.code === 0) { try { seen = parse(JSON.parse(r.stdout).text ?? ""); } catch {} }
+      if ((seen && ok(seen)) || Date.now() >= until) return seen;
+      await sleep(200);
+    }
+  }
+
+  // Text typed into the terminal. hc refuses a terminal whose output hasn't settled since it
+  // started ("still starting", nothing typed): wait and try again, for up to ~10 s.
+  async type(address, text, force, sleep) {
+    for (let k = 0; ; k++) {
+      const r = await hc(["send", "--json", ...(force ? ["--force"] : []), address, text]);
+      if (r.code === 0) return r;
+      if (k < 6 && /still starting/.test(r.stderr + r.stdout)) { await sleep(1500); continue; }
+      throw new Error(one(r.stderr) || "Could not send the answer");
+    }
+  }
+
+  async press(address, ...keys) {
+    const r = await hc(["keys", address, ...keys.map(String)]);
+    if (r.code !== 0) throw new Error(one(r.stderr) || "Could not press the key");
+  }
+
   // Press the option's number; Enter only if the dialog is still there (Claude Code selects on the number alone).
   answer(ask, option, cx) {
     // A prose question: the option is sent as a message, not pressed as a key.
     // `send` is the message behind a button whose label is not the message (Continue → "continue").
-    if (ask.delivery === "send") return this.sendText(ask, option.send ?? option.label.replace(/\s*\(recommended\)\s*$/i, ""), cx);
+    if (ask.delivery === "send") return this.sendText(ask, option.send ?? bare(option.label), cx);
     if (!stillAsking(ask)) return this.stale(ask);
     const sentTurn = liveTerminal(ask.address)?.turn ?? ask.turn ?? 0;
     this.set(ask.id, { state: "sending", answer: option.label, chosen: option, error: null, sent_turn: sentTurn, sent_at: Date.now() });
@@ -133,13 +230,90 @@ export default class Asks extends View {
     });
   }
 
+  // A dialog of several questions (Claude Code draws them as tabs): answer each tab in turn,
+  // as the person would, then press "Submit answers" on the review page. A picked answer is
+  // its number (which also moves on to the next tab); several picks are their numbers, then
+  // `right`; a typed answer is the "Type something" row's number, then the text.
+  sendTabs(ask, cx) {
+    const qs = questionsOf(ask), d = this.drafts[ask.id] ?? {};
+    const answers = qs.map((_, i) => draftOf(d[i]));
+    if (answers.some((a) => !a)) return;
+    if (!stillAsking(ask)) return this.stale(ask);
+    const sentTurn = liveTerminal(ask.address)?.turn ?? ask.turn ?? 0;
+    const summary = qs.map((q, i) => `${q.header || q.text} → ${answers[i].text}`).join(" · ");
+    this.set(ask.id, { state: "sending", answer: summary, chosen: { tabs: answers }, error: null, sent_turn: sentTurn, sent_at: Date.now() });
+    delete this.drafts[ask.id];
+    qs.forEach((_, i) => this.closeBox(`${ask.id}:${i}`, true));
+    const addr = ask.address;
+    this.deliver(ask, cx, async (sleep) => {
+      const tab = (ok) => this.watch(addr, parseTab, ok, sleep);
+      let shown = await tab(() => true);
+      if (shown?.question !== qs[0].text) {
+        // Back to the first tab. On a "Type something" row the arrows edit its text: step off it first.
+        if (shown && shown.cursor != null && shown.cursor === shown.other) await this.press(addr, "up");
+        await this.press(addr, ...Array(qs.length).fill("left"));
+        shown = await tab((p) => p.question === qs[0].text);
+      }
+      if (shown?.question !== qs[0].text) throw new Error("The dialog isn't on its first question. Open the terminal to answer it.");
+      for (let i = 0; i < qs.length; i++) {
+        const q = qs[i], a = answers[i];
+        if (a.n && q.multi) {
+          const want = new Set(a.n);
+          for (const o of shown.options) {
+            if (want.has(o.n) === Boolean(o.checked)) continue;
+            await this.press(addr, o.n);
+            shown = await tab((p) => p.question === q.text && Boolean(p.options.find((x) => x.n === o.n)?.checked) === want.has(o.n));
+          }
+          await this.press(addr, "right");
+        } else if (a.n) {
+          await this.press(addr, a.n[0]);
+        } else {
+          if (q.other == null) throw new Error(`Question ${i + 1} takes no typed answer. Open the terminal to answer it.`);
+          await this.press(addr, q.other);
+          await tab((p) => p.cursor === q.other);
+          await this.type(addr, a.text, true, sleep);
+        }
+        const next = qs[i + 1];
+        shown = await tab((p) => next ? p.question === next.text : p.review);
+        if (!(next ? shown?.question === next.text : shown?.review)) throw new Error(`Question ${i + 1} didn't take its answer. Open the terminal to finish it.`);
+      }
+      if (shown.incomplete) throw new Error("The dialog says a question has no answer. Open the terminal to finish it.");
+      await this.press(addr, shown.submit ?? 1);
+      return this.settle(addr, sleep, (g) => !(g.state === "blocked" && g.msg === ask.msg));
+    });
+  }
+
+  // "No, because…": Claude Code's permission dialog takes a reason with a no. Move to the
+  // "No" row, press Tab ("Tab to amend"), then send the reason as text.
+  sendReason(ask, text, cx) {
+    const no = ask.options.find((o) => /^no\b/i.test(o.label));
+    if (!no) return;
+    if (!stillAsking(ask)) return this.stale(ask);
+    const sentTurn = liveTerminal(ask.address)?.turn ?? ask.turn ?? 0;
+    this.set(ask.id, { state: "sending", answer: `${no.label}: ${text}`, chosen: { reason: text }, error: null, sent_turn: sentTurn, sent_at: Date.now() });
+    this.closeBox(`${ask.id}:no`, true);
+    const addr = ask.address;
+    this.deliver(ask, cx, async (sleep) => {
+      const rows = await this.watch(addr, optionRows, (p) => p.cursor != null, sleep, 3000);
+      if (rows?.cursor == null) throw new Error("Could not find the dialog's cursor. Open the terminal to answer it.");
+      const steps = no.n - rows.cursor;
+      if (steps) await this.press(addr, ...Array(Math.abs(steps)).fill(steps > 0 ? "down" : "up"));
+      const on = await this.watch(addr, optionRows, (p) => p.cursor === no.n, sleep, 3000);
+      if (on?.cursor !== no.n) throw new Error("Could not move to the No answer. Open the terminal to answer it.");
+      await this.press(addr, "tab");
+      await sleep(300);
+      await this.type(addr, text, true, sleep);
+      return this.settle(addr, sleep, (g) => g.turn > sentTurn || !(g.state === "blocked" && g.msg === ask.msg));
+    });
+  }
+
   // Free text into a dialog (Claude Code's question dialog takes typed text as its own answer) or to an idle agent.
   sendText(ask, text, cx) {
     const live = stillAsking(ask);
     if (!live && !stillIdle(ask)) return this.set(ask.id, { state: "stale", note: ask.stopped ? "Continued in terminal" : ask.delivery === "send" ? "Answered in terminal" : "Resolved in terminal", ended_at: Date.now() });
     const sentTurn = liveTerminal(ask.address)?.turn ?? ask.turn ?? 0;
     this.set(ask.id, { state: "sending", answer: text, chosen: { text }, error: null, sent_turn: sentTurn, sent_at: Date.now() });
-    this.other = null; this.input.set_value(""); this.otherText = "";
+    this.closeBox(ask.id, true);
     // Taken: the turn moved on, or (idle agent) it is no longer idle, or (dialog) the dialog is gone.
     // (A stopped agent that still reports its error on the same turn has not taken it either.)
     const taken = (g) => g.turn > sentTurn || (live ? !(g.state === "blocked" && g.msg === ask.msg) : !(g.state === "idle" || g.state === "done" || (ask.stopped && g.state === "error")));
@@ -148,10 +322,8 @@ export default class Asks extends View {
       // a paste (seen on fresh agents, not reproducible on demand): when nothing started and the
       // text is not sitting in the input box, send it once more; if it is sitting there unsent,
       // press Enter. Never more than one extra attempt.
-      const send = (force) => hc(["send", "--json", ...(force ? ["--force"] : []), ask.address, text]);
-      let r = await send(live);
+      let r = await this.type(ask.address, text, live, sleep);
       this.debug(`${ask.id} send${live ? " --force" : ""} turn ${sentTurn}: code ${r.code} out ${one(r.stdout).slice(0, 200)} err ${one(r.stderr).slice(0, 200)}`);
-      if (r.code !== 0) throw new Error(one(r.stderr) || "Could not send the answer");
       let started = null;
       try { started = JSON.parse(r.stdout).started ?? null; } catch {}
       let g = await this.settle(ask.address, sleep, taken, started === false ? 1500 : SETTLE_MS);
@@ -163,7 +335,7 @@ export default class Asks extends View {
         const onScreen = rd.code === 0 && Boolean(head) && new RegExp(`^[›❯>]\\s*${head}`, "m").test(JSON.parse(rd.stdout).text ?? "");
         this.debug(`${ask.id} not started; text on screen: ${onScreen}`);
         if (onScreen) await hc(["keys", ask.address, "enter"]);
-        else { r = await send(true); this.debug(`${ask.id} resent: ${one(r.stdout).slice(0, 200)}`); }
+        else { r = await this.type(ask.address, text, true, sleep); this.debug(`${ask.id} resent: ${one(r.stdout).slice(0, 200)}`); }
         g = await this.settle(ask.address, sleep, taken);
       }
       this.debug(`${ask.id} settled: ${JSON.stringify(g)} taken=${g ? taken(g) : null}`);
@@ -195,6 +367,8 @@ export default class Asks extends View {
     // The earlier answer may have landed after the panel gave up: never send it twice.
     const t = liveTerminal(ask.address);
     if (t && ask.sent_turn != null && (t.turn ?? 0) > ask.sent_turn) { const now = Date.now(); this.set(ask.id, { state: "delivered", answered_at: now, error: null, note: "Picked up late" }); logAnswer(ask, this.config, now, "picked up late"); return; }
+    if (ask.chosen?.tabs) { this.drafts[ask.id] = { ...ask.chosen.tabs }; return this.sendTabs(ask, cx); }
+    if (ask.chosen?.reason) return this.sendReason(ask, ask.chosen.reason, cx);
     if (ask.chosen?.text) return this.sendText(ask, ask.chosen.text, cx);
     if (ask.chosen) return this.answer(ask, ask.chosen, cx);
     this.set(ask.id, { state: "pending", error: null });
@@ -207,11 +381,56 @@ export default class Asks extends View {
     else run("agent.focus", { terminal: ask.address });
   }
 
+  // A question of a multi-question card, folded to its line, or unfolded with its answers.
+  question(ask, q, i, t, sending) {
+    const tabs = ask.delivery === "tabs", key = `${ask.id}:${i}`, open = this.openQ === key;
+    const chosen = draftOf(this.drafts[ask.id]?.[i]), picked = new Set(chosen?.n ?? []);
+    const pick = (o) => (_e, cx) => {
+      if (!q.multi) { this.closeBox(key, false); this.draft(ask.id, i, { text: bare(o.label), n: [o.n] }); return cx.notify(); }
+      // Several picks: each click adds or takes one away; "Next" moves on.
+      if (picked.has(o.n)) picked.delete(o.n); else picked.add(o.n);
+      const ns = q.options.filter((x) => picked.has(x.n)), ds = (this.drafts[ask.id] ??= {});
+      if (ns.length) ds[i] = { text: ns.map((x) => bare(x.label)).join(", "), n: ns.map((x) => x.n) }; else delete ds[i];
+      cx.notify();
+    };
+    const keep = (text, cx) => { this.closeBox(key, true); this.draft(ask.id, i, { text }); cx.notify(); };
+    // A typed answer goes where a dialog has a "Type something" row, and to any prose question.
+    const typable = !q.multi && (!tabs || q.other != null);
+    return v_flex().id(`q-${ask.id}-${i}`).w_full().gap(4).rounded(8).px(6).py(4).when(open, (el) => el.bg(t.background))
+      .child(h_flex().id(`qh-${ask.id}-${i}`).w_full().gap(8).items_start().cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { this.openQ = open ? null : key; cx.notify(); })
+        .child(div().w(18).h(18).flex_none().rounded(4).flex().items_center().justify_center().text_size(10.5).font_semibold().bg(chosen ? t.accent : t.raised).text_color(chosen ? t.background : t.muted).child(String(i + 1)))
+        .child(v_flex().flex_1().min_w(0).gap(1)
+          .child(div().text_size(12).text_color(chosen || open ? t.foreground : t.muted).child(q.text))
+          .when(Boolean(chosen), (el) => el.child(div().text_size(11.5).text_color(t.accent).child(`→ ${chosen.text}`)))))
+      .when(open && !sending, (el) => el.child(v_flex().w_full().pl(26).gap(3)
+        .when(Boolean(q.multi), (el) => el.child(div().text_size(10.5).text_color(t.dim).child("Pick any")))
+        .children(q.options.map((o, j) => h_flex().id(`qo-${ask.id}-${i}-${j}`).w_full().px(8).py(4).gap(6).items_start().rounded(6).border_1()
+          .border_color(q.recommended === j || picked.has(o.n) ? t.accent : t.border).bg(t.surface).cursor_pointer().hover((s) => s.bg(t.hover).border_color(t.input))
+          .on_click(pick(o))
+          .when(Boolean(q.multi), (el) => el.child(div().flex_none().text_size(12).text_color(picked.has(o.n) ? t.accent : t.dim).child(picked.has(o.n) ? "☑" : "☐")))
+          .child(div().flex_1().min_w(0).text_size(12).tooltip(o.detail || o.label).child(o.label))
+          .when(q.recommended === j, (el) => el.child(div().mt(2).text_size(10).flex_none().text_color(t.accent).child("recommends")))))
+        .when(Boolean(q.multi) && picked.size > 0, (el) => el.child(h_flex().id(`qn-${ask.id}-${i}`).px(8).py(4).rounded(6).text_size(11.5).text_color(t.foreground).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.draft(ask.id, i, this.drafts[ask.id]?.[i]); cx.notify(); }).child("Next")))
+        .when(typable, (el) => el.child(this.boxOpen(key)
+          ? this.box(key, t, "Keep")
+          : h_flex().id(`qt-${ask.id}-${i}`).px(8).py(4).rounded(6).text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+              .on_click((_e, cx) => this.toggleBox(key, "Type your answer", keep, cx))
+              .child(q.options.length ? "Other answer…" : "Type an answer…")))));
+  }
+
   card(ask, t, now) {
-    const sending = ask.state === "sending", failed = ask.state === "failed";
-    const questions = questionsOf(ask), drafts = this.drafts[ask.id] ?? {}, drafted = Object.keys(drafts).length;
+    const sending = ask.state === "sending", failed = ask.state === "failed", tabs = ask.delivery === "tabs";
+    const questions = questionsOf(ask), drafts = this.drafts[ask.id] ?? {}, drafted = questions.filter((_, i) => drafts[i]).length;
     const color = t[KIND[ask.kind] ?? "dim"];
     const wide = this.openCtx.has(ask.id);
+    // "More": what the agent said before it stopped, when it says more than the card does.
+    const said = ask.message || (ask.delivery === "send" ? ask.raw : "") || "", more = this.more.has(ask.id);
+    const canMore = Boolean(one(said)) && one(said) !== one(ask.context) && one(said) !== one(ask.question);
+    const recommendable = questions.some((q, i) => !drafts[i] && q.recommended != null && q.options[q.recommended]);
+    const canSay = !sending && !tabs && !ask.wizard && ask.kind !== "UNCLEAR" && ask.kind !== "APPROVAL";
+    const canRefuse = !sending && ask.kind === "APPROVAL" && Boolean(ask.amend) && ask.options.some((o) => /^no\b/i.test(o.label));
     const chip = (text, c) => div().px(5).h(16).flex_none().flex().items_center().rounded(4).text_size(10).font_semibold().bg(c).opacity(0.9).text_color(t.background).child(text);
     const action = (id, icon, label, fn, primary) => h_flex().id(id).h(26).px(8).gap(5).items_center().rounded(7).flex_none().text_size(11.5).cursor_pointer()
       .border_1().border_color(primary ? t.input : t.border).bg(primary ? t.raised : t.surface).text_color(primary ? t.foreground : t.muted)
@@ -223,6 +442,8 @@ export default class Asks extends View {
         .child(div().flex_1().min_w(0).text_size(12.5).child(o.label))
         .when(ask.recommended === i, (el) => el.child(div().mt(3).text_size(10).flex_none().text_color(t.accent).child("recommends"))))
       .when(Boolean(o.detail), (el) => el.child(div().pl(26).text_size(11).text_color(t.dim).child(o.detail)));
+    const say = (text, cx) => { const a = this.find(ask.id); if (a) this.sendText(a, text, cx); };
+    const refuse = (text, cx) => { const a = this.find(ask.id); if (a) this.sendReason(a, text, cx); };
     return v_flex().id(`ask-${ask.id}`).w_full().p(12).gap(8).rounded(10).bg(t.surface).border_1().border_color(failed ? t.blocked : t.border)
       .child(h_flex().gap(8).items_start()
         .child(div().flex_none().mt(2).child(iconOf(ask.program, 16, t.muted)))
@@ -233,48 +454,39 @@ export default class Asks extends View {
         .child(div().flex_none().mt(1).text_size(11).text_color(t.dim).child(age(now - ask.detected_at))))
       // The context starts as one cut line beside the kind chip; a click on the row opens it in full, another closes it.
       // Open, it runs on from the chip and its next lines start at the card's edge: a word a child, in a wrapping row.
+      // "More" at its end ("Less" when open) shows what the agent said, under the row.
       .child(h_flex().id(`ctx-${ask.id}`).w_full().items_center()
         .when(!wide, (el) => el.gap(8).child(chip(ask.kind, color)))
         .when(wide, (el) => el.flex_wrap().gap_x(3).child(chip(ask.kind, color)).child(div().w(2).flex_none())
           .children(one(ask.context).split(" ").map((w) => div().min_w(0).truncate().text_size(11).text_color(t.dim).child(w))))
         .when(Boolean(ask.context), (el) => el.cursor_pointer()
           .on_click((_e, cx) => { if (wide) this.openCtx.delete(ask.id); else this.openCtx.add(ask.id); cx.notify(); }))
-        .when(Boolean(ask.context) && !wide, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).hover((s) => s.text_color(t.muted)).child(ask.context))))
+        .when(Boolean(ask.context) && !wide, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).hover((s) => s.text_color(t.muted)).child(ask.context)))
+        .when(!ask.context && canMore, (el) => el.child(div().flex_1()))
+        .when(canMore, (el) => el.child(div().id(`more-${ask.id}`).flex_none().text_size(11).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); if (more) this.more.delete(ask.id); else this.more.add(ask.id); cx.notify(); })
+          .child(more ? "Less" : "More"))))
+      .when(canMore && more, (el) => el.child(v_flex().w_full().gap(4).px(8).py(6).rounded(8).bg(t.background)
+        .child(div().w_full().text_size(11.5).text_color(t.muted).whitespace_normal().child(said.split("\n").slice(-60).join("\n")))
+        .children(linksIn(said).slice(0, 8).map((url, k) => h_flex().id(`link-${ask.id}-${k}`).w_full().gap(5).items_start().cursor_pointer()
+          .text_size(11.5).text_color(t.accent).hover((s) => s.underline()).on_click((_e, cx) => cx.open_url(url))
+          .child(div().flex_none().child("↗")).child(div().flex_1().min_w(0).child(url))))))
       .child(div().w_full().text_size(13).text_color(t.foreground).child(ask.question || (ask.enriched ? "Needs you in the terminal" : "Reading the dialog…")))
       .when(ask.options.length > 0 && ask.kind !== "UNCLEAR", (el) => el.child(v_flex().w_full().gap(5).children(ask.options.map(option))))
-      .when(questions.length > 1, (el) => el.child(v_flex().w_full().gap(4).children(questions.map((q, i) => {
-        const key = `${ask.id}:${i}`, open = this.openQ === key, chosen = drafts[i];
-        const pick = (text) => (_e, cx) => { this.draft(ask.id, i, text); this.otherQ = null; cx.notify(); };
-        return v_flex().id(`q-${ask.id}-${i}`).w_full().gap(4).rounded(8).px(6).py(4).when(open, (el) => el.bg(t.background))
-          .child(h_flex().id(`qh-${ask.id}-${i}`).w_full().gap(8).items_start().cursor_pointer().hover((s) => s.text_color(t.foreground))
-            .on_click((_e, cx) => { this.openQ = open ? null : key; if (this.otherQ && this.otherQ.i !== i) this.otherQ = null; cx.notify(); })
-            .child(div().w(18).h(18).flex_none().rounded(4).flex().items_center().justify_center().text_size(10.5).font_semibold().bg(chosen ? t.accent : t.raised).text_color(chosen ? t.background : t.muted).child(String(i + 1)))
-            .child(v_flex().flex_1().min_w(0).gap(1)
-              .child(div().text_size(12).text_color(chosen || open ? t.foreground : t.muted).child(q.text))
-              .when(Boolean(chosen), (el) => el.child(div().text_size(11.5).text_color(t.accent).child(`→ ${chosen}`)))))
-          .when(open && !sending, (el) => el.child(v_flex().w_full().pl(26).gap(3)
-            .children(q.options.map((o, j) => h_flex().id(`qo-${ask.id}-${i}-${j}`).w_full().px(8).py(4).gap(6).items_center().rounded(6).border_1()
-              .border_color(q.recommended === j ? t.accent : t.border).bg(t.surface).cursor_pointer().hover((s) => s.bg(t.hover).border_color(t.input))
-              .on_click(pick(o.label))
-              .child(div().flex_1().min_w(0).text_size(12).child(o.label))
-              .when(q.recommended === j, (el) => el.child(div().text_size(10).flex_none().text_color(t.accent).child("recommends")))))
-            .child(this.otherQ?.id === ask.id && this.otherQ.i === i
-              ? Input.new(this.input).w_full().h(30).px(10).rounded(6).border_1().border_color(t.accent).bg(t.surface).text_size(12).text_color(t.foreground)
-              : h_flex().id(`qt-${ask.id}-${i}`).px(8).py(4).rounded(6).text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
-                  .on_click((_e, cx) => { this.otherQ = { id: ask.id, i }; this.other = null; this.input.set_value(""); this.otherText = ""; this.input.focus(); cx.notify(); })
-                  .child(q.options.length ? "Other answer…" : "Type an answer…"))));
-      }))))
+      .when(questions.length > 1 || (tabs && questions.length > 0), (el) => el.child(v_flex().w_full().gap(4).children(questions.map((q, i) => this.question(ask, q, i, t, sending)))))
       .when(ask.kind === "UNCLEAR" && ask.enriched, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Asks could not read this dialog. Open the terminal to answer it.")))
-      .when(this.other === ask.id, (el) => el.child(Input.new(this.input).w_full().h(32).px(10).rounded(8).border_1().border_color(t.accent).bg(t.background).text_size(12.5).text_color(t.foreground)))
+      .when(this.boxOpen(ask.id), (el) => el.child(this.box(ask.id, t, "Send")))
+      .when(this.boxOpen(`${ask.id}:no`), (el) => el.child(this.box(`${ask.id}:no`, t, "Send no")))
       .when(failed, (el) => el.child(div().text_size(11.5).text_color(t.blocked).child(ask.error ?? "Failed")))
       .child(h_flex().gap(6).items_center().flex_wrap()
         .when(failed, (el) => el.child(action(`retry-${ask.id}`, "mods/asks/send.svg", "Retry", (cx) => this.retry(ask, cx), true)))
-        .when(!sending && drafted > 0, (el) => el.child(action(`send-${ask.id}`, "mods/asks/send.svg", `Send answers (${drafted}/${questions.length})`, (cx) => this.sendDrafts(ask, cx), true)))
-        .when(!sending && !ask.wizard && ask.kind !== "UNCLEAR" && ask.kind !== "APPROVAL", (el) => el.child(action(`other-${ask.id}`, "mods/asks/send.svg", this.other === ask.id ? "Cancel" : ask.options.length ? "Other answer" : "Answer", (cx) => {
-          this.other = this.other === ask.id ? null : ask.id;
-          if (this.other) this.input.focus();
-          cx.notify();
-        })))
+        // A dialog takes its answers all at once; a prose question takes what there is.
+        .when(!sending && drafted > 0 && (!tabs || drafted === questions.length), (el) => el.child(action(`send-${ask.id}`, "mods/asks/send.svg", `Send answers (${drafted}/${questions.length})`, (cx) => this.sendDrafts(ask, cx), true)))
+        .when(!sending && recommendable, (el) => el.child(action(`rec-${ask.id}`, "mods/asks/check.svg", drafted ? "Recommended for the rest" : "Take recommended", (cx) => { this.recommend(ask, false); cx.notify(); })))
+        .when(canSay, (el) => el.child(action(`other-${ask.id}`, "mods/asks/send.svg", this.boxOpen(ask.id) ? "Cancel" : ask.options.length ? "Other answer" : "Answer",
+          (cx) => this.toggleBox(ask.id, "Type your answer", say, cx))))
+        .when(canRefuse, (el) => el.child(action(`no-${ask.id}`, "mods/asks/x.svg", this.boxOpen(`${ask.id}:no`) ? "Cancel" : "No, because…",
+          (cx) => this.toggleBox(`${ask.id}:no`, "Why not, or what to do instead", refuse, cx))))
         .when(!ask.notice, (el) => el.child(action(`open-${ask.id}`, "mods/asks/terminal.svg", "Open terminal", () => this.open(ask))))
         .child(div().flex_1())
         .when(!sending, (el) => el.child(action(`dismiss-${ask.id}`, "mods/asks/x.svg", "Dismiss", () => this.set(ask.id, { state: "dismissed", ended_at: Date.now() })))));

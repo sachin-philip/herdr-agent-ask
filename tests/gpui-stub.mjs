@@ -5,3 +5,5 @@ export class View {}
 export const div = () => chain(), svg = () => chain(), image = () => chain(), v_flex = () => chain(), h_flex = () => chain();
 export const Input = { new: () => chain() };
 export const InputState = { new: () => ({ on() {}, value: () => "", set_value() {}, focus() {} }) };
+export const Textarea = { new: () => chain() };
+export const TextareaState = { new: () => ({ on() {}, value: () => "", set_value() {}, set_auto_grow() {}, focus() {} }) };
