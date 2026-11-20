@@ -1,8 +1,54 @@
 # Changelog
 
-## Unreleased
+## 0.3.5 · 2026-11-13
 
-- Parse boxed option dialogs (`│ > 1. Yes`), so agents like CodeBuddy show clickable options.
+- **Delivery tests.** The panel's send path runs under `node --test` against a scripted hc
+  and a fake clock: a message taken, a dropped paste resent once, Enter on text left unsent,
+  no reaction (failed with the message), a decline in the terminal, Retry after the agent
+  moved on, an answer by key, and a wizard refused by both the panel and the engine. 36 tests.
+- **Live harness** gains `dialog` and `wizard` cases (`scripts/e2e.py`).
+- **Stopped on an error.** A turn that ends in an error the agent reports (no connection, the
+  API down) is a `STOPPED` card with `Continue`, which sends `continue`; a new card comes if the
+  next turn fails too. A logged-out agent gets a `STOPPED` card that says to run `/login` in
+  the terminal, instead of an `UNCLEAR` one. Tests run the engine against the status reports
+  and screens of Claude Code with a dead endpoint and an invalid token.
+- **Context line opens on a click.** The dim line beside a card's kind chip is one cut line
+  again, so a long one no longer crowds the question; a click on the row shows it in full,
+  starting beside the chip with its next lines at the card's edge, and another click closes it.
+- **Wizards are safe.** Claude Code's several-question dialog (a tab bar over the questions)
+  used to show as one question, and the panel's fallback Enter answered the next question with
+  whatever was highlighted. The card now says "N questions in one dialog: … Answer them in the
+  terminal." with no options; the panel reads the screen before every key press, also on
+  Retry and `asks.accept`, and presses nothing while the bar is up. A dialog declined in the
+  terminal is "Declined in terminal", not delivered. Late pickups are logged like any answer.
+  A declined dialog's remnants and login or API errors no longer become cards; box borders
+  come off dialog lines (as in PR #8). Tests cover all of it against captured screens.
+- **Codex.** A Codex turn that ends in a plain-text question becomes a card and is answered
+  with a message, like Claude Code's. A space can mix both; each terminal is read in the
+  format of the program in it.
+- **Classifier on a settings-based login.** The Claude CLI is started without the person's
+  settings for speed; when that fails with an auth error (a login kept in settings, such as an
+  `apiKeyHelper`), the call is repeated with settings on and that is remembered.
+- **Classifier without Claude.** Plain-text questions are read by the Claude Code CLI when
+  installed, else by the Codex CLI (`codex exec`, newest copy found); `classifier` in
+  `asks.json` forces one. With neither, a card in every space says that only Claude Code and
+  Codex are supported for now and where to ask for more; it goes once a CLI turns up.
+- **Dropped pastes.** Codex sometimes drops a sent answer; the panel notices (hc reports no
+  turn started) and presses Enter or resends once. Failed cards resolve themselves: delivered
+  when the agent moves on, `Agent closed` when it is gone, `Not delivered` after ten minutes.
+  `Open terminal` on a closed agent no longer throws a toast.
+- **Clear** on the Answered list forgets every finished card in the shown scope.
+- **Tests for the classifier.** The engine runs under `node --test` against a scripted
+  `herdr` module: Claude only, Codex only (newest binary wins), both (Claude by default,
+  `classifier` decides), and neither (no model started, one notice card that survives the
+  tick and leaves once a CLI appears).
+- **Tests.** The screen and report parsers moved to `mods/tabs-asks/parse.js` (no Herdr
+  import) and run under `node --test` against real captured screens, on every PR through
+  GitHub Actions. `scripts/check-mods.sh` loads the mods in the app's checker;
+  `scripts/e2e.py` is the live release check (Claude alone, Codex alone, both).
+- **Decisions log out of the repo** (issue #2). The default is now one file per space,
+  `~/.config/herdr-app/decisions/<space>.md`; each line also names the agent's folder.
+  `log` takes `{space}` and `{repo}`; `"docs/decisions.md"` restores the old in-repo file.
 
 ## 0.3.0 · 2026-11-10
 

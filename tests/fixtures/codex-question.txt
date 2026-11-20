@@ -1,0 +1,37 @@
+› ask me a qn with answer in text
+
+
+• What feature would you like to add to Herdr next?
+
+  Worked for 4s • 9:14 PM
+
+
+› with some answers too
+
+
+• What’s one feature you’d like Herdr to have?
+
+  Answer: A search box that finds past agent questions and answers.
+
+  Worked for 1s • 9:15 PM
+
+
+› qn and list of answers
+
+
+• Question: What would you like Herdr to help you do?
+
+  Answers:
+
+  • Track what each agent is working on
+  • Find and answer open questions
+  • Review changes before they’re applied
+  • Coordinate work across several agents
+
+  Worked for 1s • 9:15 PM
+                                                     ⚠ weekly limit: 10% left · /status
+
+› Ask Codex to do anything
+
+  GPT-6-Luna medium · ~/Code/labs/herdr-openqn · Verify Codex authorship
+  ← for agents · ? for shortcuts                              ⚠ 2 warnings · f2 to view

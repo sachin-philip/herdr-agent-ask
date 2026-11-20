@@ -1,0 +1,9 @@
+{
+  "name": "herdr-agent-ask",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import ./tests/register.mjs --test",
+    "check": "sh scripts/check-mods.sh"
+  }
+}

@@ -1,0 +1,25 @@
+
+ ▐▛███▛█   Claude Code v2.1.323
+▝▜██████▀  Haiku 5.5 · Claude Ultra
+ ▝▝   ▝▝   ~/Code/labs/herdr-openqn
+
+
+❯ Use the AskUserQuestion tool once with TWO questions in the same call: first 'Which
+  colour?' with options Green, Red, Blue (recommend Green); second 'Which size?' with
+  options Small, Medium, Large (recommend Medium).
+────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Colour  ☐ Size  ✔ Submit  →
+
+Which colour?
+
+❯ 1. Green (Recommended)
+     Recommended default colour.
+  2. Red
+     Red colour option.
+  3. Blue
+     Blue colour option.
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

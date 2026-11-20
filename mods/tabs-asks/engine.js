@@ -1,137 +1,18 @@
 // Detection and understanding. Runs inside the tab bar mod because that copy is always
-// shown, so asks are found and counted before the panel is ever opened.
+// shown, so asks are found and counted before the panel is ever opened. The screen and
+// report parsers live in parse.js (no Herdr import), so they can be tested with plain Node.
 import { terminals, agents, focused, hc, exec, notify, appHome } from "herdr";
-import { readState, update, hash, statusOf, reportOf, msgOf, agentName, MAX_ASKS, KEEP_MS } from "./state.js";
+import { readState, update, hash, statusOf, reportOf, msgOf, agentName, wizardOn, declinedOn, logAnswer, MAX_ASKS, KEEP_MS } from "./state.js";
+import { SCHEMA, normalize, parseScreen, parseReport, parseLastMessage } from "./parse.js";
+export { SCHEMA, normalize, parseScreen, parseReport, parseLastMessage, parseClaudeMessage, parseCodexMessage } from "./parse.js";
 const MAX_CHECKED = 300;
-
-// A prompt the person sent, not the input box at the bottom (which sits under a rule
-// and may hold text typed but not yet sent).
-function sentPrompt(lines, i) {
-  if (!/^❯\s+\S/.test(lines[i])) return false;
-  let j = i - 1;
-  while (j >= 0 && !lines[j].trim()) j--;
-  return !(j >= 0 && RULE.test(lines[j]));
-}
-
-// A list of separate questions is not a list of answers. If the model returned the
-// questions as options (or several questions at once), there is nothing to click: the
-// card lists the questions and takes one typed answer.
-export function normalize(model) {
-  if (!model) return model;
-  const isQ = (s) => /\?\s*$/.test(s);
-  const sub = (q) => {
-    const o = typeof q === "string" ? { text: q } : q ?? {};
-    const options = (Array.isArray(o.options) ? o.options : []).map((x) => String(x).trim()).filter((x) => x && !isQ(x));
-    const recommended = Number.isInteger(o.recommended) && o.recommended >= 0 && o.recommended < options.length ? o.recommended : null;
-    return { text: String(o.text ?? "").trim(), options, recommended };
-  };
-  const questions = (Array.isArray(model.questions) ? model.questions : []).map(sub).filter((q) => q.text);
-  const options = Array.isArray(model.options) ? model.options.map((o) => String(o).trim()).filter(Boolean) : [];
-  const asking = options.filter(isQ).length;
-  if (questions.length > 1 || (options.length > 1 && asking >= Math.ceil(options.length / 2))) {
-    return { ...model, options: [], recommended: null, questions: questions.length > 1 ? questions : options.filter(isQ).map(sub) };
-  }
-  return { ...model, options, questions: [] };
-}
-
-const SCHEMA = JSON.stringify({
-  type: "object",
-  properties: {
-    asks: { type: "boolean" },
-    kind: { type: "string", enum: ["APPROVAL", "DECISION", "QUESTION", "UNCLEAR"] },
-    question: { type: "string" },
-    options: { type: "array", items: { type: "string" } },
-    questions: { type: "array", items: { type: "object", properties: {
-      text: { type: "string" }, options: { type: "array", items: { type: "string" } }, recommended: { type: ["integer", "null"] },
-    }, required: ["text", "options", "recommended"], additionalProperties: false } },
-    recommended: { type: ["integer", "null"] },
-    context: { type: "string" },
-    confidence: { type: "number" },
-  },
-  required: ["asks", "kind", "question", "options", "questions", "recommended", "context", "confidence"],
-  additionalProperties: false,
-});
-
-const OPTION = /^\s*([>❯]\s*)?(\d{1,2})\.\s+(.*?)\s*$/;
-const RULE = /^[\s─╌═━]+$/;
-
-// Numbered options on a screen, with the cursor's line and the line under each option.
-export function parseScreen(text) {
-  // Some agents draw the dialog inside a box: "│ > 1. Yes".
-  const lines = (text ?? "").replace(/\r/g, "").split("\n")
-    .map((l) => l.replace(/^\s*│\s?/, "").replace(/\s*│\s*$/, ""));
-  // Only the dialog at the bottom: start after the last rule above the first option run.
-  let options = [], cursor = null, context = "", question = "";
-  for (let i = 0; i < lines.length; i++) {
-    const m = OPTION.exec(lines[i]);
-    if (!m) continue;
-    const n = Number(m[2]);
-    if (options.length && n !== options.at(-1).n + 1) { options = []; cursor = null; }
-    if (!options.length && n !== 1) continue;
-    const detail = lines[i + 1] && !OPTION.test(lines[i + 1]) && !RULE.test(lines[i + 1]) && /^\s{4,}\S/.test(lines[i + 1]) ? lines[i + 1].trim() : "";
-    options.push({ n, label: m[3], detail });
-    if (m[1]) cursor = n;
-  }
-  if (options.length) {
-    const first = lines.findIndex((l) => OPTION.exec(l)?.[2] === "1" && l.includes(options[0].label));
-    for (let i = first - 1; i >= 0 && first - i < 12; i--) {
-      const l = lines[i].trim();
-      if (!l || RULE.test(l)) continue;
-      if (/\?\s*$/.test(l) && !question) { question = l; continue; }
-      if (question) break;
-    }
-  }
-  // Context: the agent's last line of prose in the current turn (after the last prompt the person sent).
-  let start = 0;
-  for (let i = lines.length - 1; i >= 0; i--) if (sentPrompt(lines, i)) { start = i; break; }
-  for (let i = lines.length - 1; i >= start; i--) {
-    const l = lines[i];
-    if (/^⏺\s+\S/.test(l) && !/^⏺\s+(User answered|Write\(|Read\(|Bash\(|Edit\()/.test(l)) { context = l.replace(/^⏺\s+/, "").trim(); break; }
-  }
-  return { options, cursor, context, question };
-}
-
-// Claude Code says what it wants in its status report: no model needed.
-export function parseReport(report) {
-  const msg = report?.msg ?? "";
-  if (report?.kind === "question") {
-    const m = /^answer:\s*([\s\S]*?)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*$/.exec(msg);
-    if (m) {
-      const opts = m[2].split(" · ").map((s) => s.trim()).filter(Boolean);
-      const rec = opts.findIndex((o) => /\(recommended\)/i.test(o));
-      return { kind: "DECISION", question: m[1], options: opts.map((label, i) => ({ n: i + 1, label, detail: "" })), recommended: rec >= 0 ? rec : null, source: "report" };
-    }
-    return { kind: "QUESTION", question: msg.replace(/^answer:\s*/, ""), options: [], recommended: null, source: "report" };
-  }
-  if (report?.kind === "permission") {
-    const m = /^approve\s+([^:]+):\s*([\s\S]*)$/.exec(msg);
-    return { kind: "APPROVAL", question: m ? `Allow ${m[1]}: ${m[2]}` : msg.replace(/^approve\s*/, "Allow "), options: [], recommended: null, source: "report" };
-  }
-  if (report?.kind) return { kind: "UNCLEAR", question: msg || `${report.kind}`, options: [], recommended: null, source: "report" };
-  return null;
-}
-
-// The agent's own words since the person's last prompt, without tool lines and the
-// "✻ done" footer: what a finished turn said. hasQuestion is the cheap pre-filter.
-export function parseLastMessage(text) {
-  const lines = (text ?? "").replace(/\r/g, "").split("\n");
-  let start = -1;
-  for (let i = lines.length - 1; i >= 0; i--) if (sentPrompt(lines, i)) { start = i; break; }
-  if (start < 0) return { message: "", hasQuestion: false };
-  // Skip the prompt's own continuation lines.
-  let i = start + 1;
-  while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*[⏺•·✻✢✶✽*]/.test(lines[i])) i++;
-  const out = [];
-  for (; i < lines.length; i++) {
-    const l = lines[i];
-    if (/^[✻✢✶✽*]\s.*·\s*(done|idle)/.test(l) || RULE.test(l) || /^❯/.test(l)) break;
-    if (/^\s*(⎿|Searched for|Read \d|Ran \d|Listed \d|Wrote \d|Edited \d)/.test(l)) continue;
-    if (/^[⏺•]\s+(Write|Read|Bash|Edit|Grep|Glob|Update|Search|Task)\(/.test(l)) continue;
-    out.push(l.replace(/^[⏺•]\s+/, "").trimEnd());
-  }
-  const message = out.join("\n").trim();
-  return { message, hasQuestion: /\?(\s|$)/.test(message) };
-}
+// The card shown when neither the Claude Code nor the Codex CLI is on the machine.
+export const NOTICE_ID = "notice:no-classifier";
+export const NOTICE_TEXT = "Asks reads plain-text questions with the Claude Code or Codex CLI, and neither is on this machine. Only those two agents are supported for now; dialogs still work. More agents are coming: ask for yours at github.com/sachin-philip/herdr-agent-ask/issues.";
+const noticeAsk = (now) => ({ id: NOTICE_ID, notice: true, address: null, pane: null, space: null, space_name: "", agent: "Asks", program: null, app: null, cwd: null, turn: 0, msg: "",
+  detected_at: now, state: "pending", kind: "NOTICE", question: NOTICE_TEXT, options: [], recommended: null, context: "", raw: "", source: "none", confidence: 1, enriched: true,
+  answer: null, answered_at: null, error: null, note: null });
+const one = (s) => (s ?? "").replace(/\s+/g, " ").trim();
 
 export class Engine {
   constructor() { this.config = null; this.enriching = new Set(); this.notified = new Set(); this.checking = new Set(); this.started = false; }
@@ -142,7 +23,7 @@ export class Engine {
     const live = terminals().filter((t) => t.state === "live");
     const byAddress = new Map(live.map((t) => [t.address, t]));
     const list = agents();
-    const fresh = [], toCheck = [];
+    const fresh = [], stopped = [], toCheck = [], healed = [];
     update((s) => {
       for (const t of live) {
         if (statusOf(t) !== "blocked") continue;
@@ -167,23 +48,53 @@ export class Engine {
           context: "", raw: "", source: parsed?.source ?? "none", confidence: parsed ? 1 : 0, enriched: false,
           answer: null, answered_at: null, error: null, note: null,
         };
+        // A logged-out agent: the report says it all, there is no dialog to read.
+        if (ask.kind === "STOPPED") ask.enriched = true;
         s.asks.unshift(ask);
         fresh.push(ask);
+      }
+      // A turn that stopped on an error the agent reports (no connection, the API down): one
+      // card per (terminal, turn) with Continue, which sends "continue" as a message.
+      for (const t of live) {
+        if (statusOf(t) !== "error") continue;
+        const id = `${t.address}:e:${t.turn ?? 0}`;
+        if (s.asks.some((a) => a.id === id)) continue;
+        for (const a of s.asks) if (a.address === t.address && a.state === "pending") { a.state = "stale"; a.note = "Resolved in terminal"; a.ended_at = now; }
+        const agent = list.find((x) => x.address === t.address) ?? null;
+        const ask = {
+          id, address: t.address, pane: agent?.pane ?? null, space: agent?.space ?? t.labels?.["herdr.space"] ?? null,
+          space_name: agent?.space_name ?? (t.labels?.where ?? "").split(" / ")[0] ?? "",
+          agent: agentName(agent, t), program: agent?.program ? { key: agent.program.key, name: agent.program.name, icon: agent.program.icon, tint: agent.program.tint } : null,
+          app: reportOf(t)?.app ?? agent?.app ?? null, cwd: t.cwd ?? null, turn: t.turn ?? 0, msg: msgOf(t),
+          detected_at: now, state: "pending", delivery: "send", stopped: true,
+          kind: "STOPPED", question: one(msgOf(t)) || "Stopped on an error", options: [{ n: 1, label: "Continue", send: "continue", detail: "" }], recommended: null,
+          context: "", raw: "", source: "report", confidence: 1, enriched: true,
+          answer: null, answered_at: null, error: null, note: null,
+        };
+        s.asks.unshift(ask);
+        stopped.push(ask);
       }
       // Right after a reload terminals() can be empty or without reports for a moment: a card
       // goes stale only when its dialog has been gone for 3 s, and never while nothing is listed.
       if (live.length) for (const a of s.asks) {
+        if (a.notice) continue;
         const t = byAddress.get(a.address);
         const st = statusOf(t);
         // An answer the panel gave up on (no reaction in time) was often just held by hc until
         // the terminal went quiet: once the agent moves on, it was delivered after all.
-        if ((a.state === "failed" || a.state === "sending") && t && a.sent_turn != null) {
-          const moved = (t.turn ?? 0) > a.sent_turn || (a.delivery !== "send" && !(st === "blocked" && msgOf(t) === a.msg));
-          if (moved && a.state === "failed") { a.state = "delivered"; a.answered_at = now; a.error = null; a.note = "Picked up late"; }
+        if (a.state === "failed") {
+          if (!t) { a.state = "stale"; a.note = "Agent closed"; a.ended_at = now; continue; }
+          // Only a turn that moved on means the answer landed. A dialog that merely closed may
+          // have been cancelled in the terminal: that card is resolved there, not delivered.
+          if (a.sent_turn != null && (t.turn ?? 0) > a.sent_turn) { a.state = "delivered"; a.answered_at = now; a.error = null; a.note = "Picked up late"; healed.push(a); continue; }
+          if (a.delivery !== "send" && !(st === "blocked" && msgOf(t) === a.msg)) { a.state = "stale"; a.note = "Resolved in terminal"; a.ended_at = now; continue; }
+          if (now - (a.sent_at ?? a.detected_at) > 10 * 60 * 1000) { a.state = "stale"; a.note = "Not delivered"; a.ended_at = now; }
           continue;
         }
+        if (a.state === "sending") continue;
         if (a.state !== "pending") continue;
         const gone = !t ? "Agent closed"
+          : a.stopped ? (st === "error" && (t.turn ?? 0) === (a.turn ?? 0) ? null : "Continued in terminal")
           : a.delivery === "send" ? ((st === "idle" || st === "done") && (t.turn ?? 0) === (a.turn ?? 0) ? null : "Answered in terminal")
           : st !== "blocked" || msgOf(t) !== a.msg ? "Resolved in terminal" : null;
         if (!gone) { delete a.gone_since; continue; }
@@ -207,9 +118,11 @@ export class Engine {
       s.asks = s.asks.filter((a) => a.state === "pending" || a.state === "sending" || now - (a.ended_at ?? a.answered_at ?? a.detected_at) < KEEP_MS).slice(0, MAX_ASKS);
     });
     if (this.config) this.started = true;
+    for (const a of healed) logAnswer(a, this.config, a.answered_at, "picked up late");
     for (const t of toCheck) this.checkTurn(t, list.find((x) => x.address === t.address) ?? null, cx);
+    for (const ask of stopped) if (this.config?.toast && focused()?.terminal !== ask.address) notify({ title: `${ask.agent} stopped`, body: ask.question, level: "warning", timeout: 5000, action: { name: "tabs-asks.open" } });
     for (const ask of fresh) {
-      this.enrich(ask.id, cx);
+      if (ask.kind !== "STOPPED") this.enrich(ask.id, cx);
       if (this.config?.toast !== false && !this.notified.has(ask.id) && focused()?.terminal !== ask.address) {
         this.notified.add(ask.id);
         notify({ title: `${ask.agent} is asking`, body: ask.question || "needs your input", level: "warning", timeout: 5000, action: { name: "tabs-asks.open" } });
@@ -234,6 +147,15 @@ export class Engine {
         const text = screen?.text ?? "";
         const parsed = parseScreen(text);
         const patch = { raw: text.split("\n").slice(-40).join("\n").slice(-3000), context: parsed.context, enriched: true };
+        const tabs = wizardOn(text);
+        if (tabs) {
+          // Several questions in one dialog: the report only knows the first, so no option on the
+          // card would be safe to press. The card says so and opens the terminal.
+          Object.assign(patch, { kind: "DECISION", wizard: true, options: [], recommended: null,
+            question: `${tabs.length} questions in one dialog: ${tabs.join(" · ")}. Answer them in the terminal.` });
+          update((s) => { const a = s.asks.find((x) => x.id === id); if (a) Object.assign(a, patch); });
+          return;
+        }
         if (ask.source === "report") {
           // Keep the report's words; take the screen's numbering, question line and details when they line up.
           if (ask.options.length && parsed.options.length >= ask.options.length && ask.options.every((o, i) => parsed.options[i].label.startsWith(o.label.slice(0, 12)))) {
@@ -292,9 +214,11 @@ export class Engine {
         const r = await hc(["read", t.address, "--json", "--lines", "100"]);
         if (r.code !== 0) { this.debug(`${key} read failed: ${r.stderr}`); return; }
         const text = JSON.parse(r.stdout).text ?? "";
-        const { message, hasQuestion } = parseLastMessage(text);
+        const { message, hasQuestion } = parseLastMessage(text, reportOf(t)?.app ?? agent?.app ?? null);
         this.debug(`${key} message ${message.length} chars, question=${hasQuestion}`);
         if (!hasQuestion || message.length < 8) return;
+        // Not questions for the person: a login prompt or an API error the agent printed.
+        if (/API Error|Please run \/login|rate limit/i.test(message)) { this.debug(`${key} skipped: error text`); return; }
         const model = normalize(await this.classify(message, { app: reportOf(t)?.app ?? agent?.app, program: agent?.program, msg: "" }, "message"));
         this.debug(`${key} model: ${JSON.stringify(model)}`);
         if (!model || !model.asks || model.confidence < 0.6) return;
@@ -343,16 +267,86 @@ export class Engine {
       `Agent program: ${ask.app ?? ask.program?.name ?? "unknown"}. Status report: ${JSON.stringify(ask.msg)}.`,
       "Screen (last lines):", "```", text.split("\n").slice(-45).join("\n").slice(-6000), "```",
     ].join("\n");
+    const backend = await this.backend();
+    if (!backend) { this.debug("no classifier: neither claude nor codex is on PATH"); return null; }
     try {
-      // Skipping the person's MCP servers and settings cuts the CLI's start from ~4 s to ~1 s;
-      // the classifier needs neither (it runs no tools).
-      const r = await exec("claude", ["-p", "--no-session-persistence", "--model", this.config?.model ?? "haiku", "--output-format", "json", "--json-schema", SCHEMA,
-        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "", prompt]);
-      if (r.code !== 0) { this.debug(`claude exit ${r.code}: ${r.stderr} ${r.stdout.slice(0, 200)}`); return null; }
-      const out = JSON.parse(r.stdout);
-      if (out.is_error) { this.debug(`claude error: ${String(out.result).slice(0, 200)}`); return null; }
-      const o = out.structured_output ?? (typeof out.result === "string" ? JSON.parse(out.result) : null);
+      const o = backend === "codex" ? await this.askCodex(prompt) : await this.askClaude(prompt);
       return o && Array.isArray(o.options) ? o : null;
-    } catch (e) { this.debug(`claude threw: ${e?.message ?? e}`); return null; }
+    } catch (e) { this.debug(`${backend} threw: ${e?.message ?? e}`); return null; }
+  }
+
+  // Which CLI runs the classifier: `classifier` in asks.json (`claude` or `codex`), or `auto`:
+  // claude when installed, else codex, else nothing (and a one-time notice asking for an issue
+  // so another agent's CLI can be added). Looked up once; reset when the config is reloaded.
+  async backend() {
+    const want = this.config?.classifier ?? "auto";
+    if (want === "claude") return "claude";
+    if (want === "codex") return (await this.codexBin()) ? "codex" : null;
+    if (this._backend !== undefined) return this._backend;
+    const r = await exec("sh", ["-c", "command -v claude >/dev/null 2>&1 && echo claude"]);
+    this._backend = r.code === 0 && /claude/.test(r.stdout) ? "claude" : (await this.codexBin()) ? "codex" : null;
+    this.debug(`classifier: ${this._backend ?? "none"}`);
+    // Neither CLI: say so where the person looks, as a card in every space (once; Dismiss keeps
+    // it away). The card goes by itself once a CLI turns up.
+    const now = Date.now(), found = this._backend;
+    update((s) => {
+      const has = s.asks.some((a) => a.id === NOTICE_ID);
+      if (!found && !has) s.asks.unshift(noticeAsk(now));
+      if (found && has) s.asks = s.asks.filter((a) => a.id !== NOTICE_ID);
+    });
+    return this._backend;
+  }
+
+  // The newest codex on this machine: Codex's own installer leaves an older copy in
+  // ~/.local/bin that can sit first on PATH, and old versions reject newer model names.
+  async codexBin() {
+    if (this._codex !== undefined) return this._codex;
+    const r = await exec("sh", ["-c", 'for b in "$(command -v codex 2>/dev/null)" /opt/homebrew/bin/codex /usr/local/bin/codex "$HOME/.local/bin/codex" "$HOME/.codex/bin/codex"; do [ -n "$b" ] && [ -x "$b" ] && printf "%s %s\n" "$b" "$("$b" --version 2>/dev/null | head -1)"; done']);
+    let best = null, bestV = [];
+    for (const line of (r.stdout ?? "").split("\n")) {
+      const m = /^(\S+) .*?(\d+)\.(\d+)\.(\d+)/.exec(line.trim());
+      if (!m) continue;
+      const v = [+m[2], +m[3], +m[4]];
+      const newer = !best || v[0] > bestV[0] || (v[0] === bestV[0] && (v[1] > bestV[1] || (v[1] === bestV[1] && v[2] > bestV[2])));
+      if (newer) { best = m[1]; bestV = v; }
+    }
+    this._codex = best;
+    this.debug(`codex: ${best ?? "none"}${best ? " " + bestV.join(".") : ""}`);
+    return best;
+  }
+
+  async askClaude(prompt) {
+    // Skipping the person's MCP servers and settings cuts the CLI's start from ~4 s to ~1 s;
+    // the classifier needs neither (it runs no tools). A login that lives in settings
+    // (apiKeyHelper, env) needs them though: on an auth error the call is made once more with
+    // settings on, and that is remembered.
+    const base = ["-p", "--no-session-persistence", "--model", this.config?.model ?? "haiku", "--output-format", "json", "--json-schema", SCHEMA, "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'];
+    const lean = !this._claudeNeedsSettings;
+    let r = await exec("claude", [...base, ...(lean ? ["--setting-sources", ""] : []), prompt]);
+    const text = `${r.stderr} ${r.stdout}`;
+    if (lean && (r.code !== 0 || /"is_error":\s*true/.test(r.stdout)) && /log ?in|auth|api key|credential|unauthori[sz]ed|401/i.test(text)) {
+      this.debug("claude: auth error without settings; retrying with the person's settings on");
+      this._claudeNeedsSettings = true;
+      r = await exec("claude", [...base, prompt]);
+    }
+    if (r.code !== 0) { this.debug(`claude exit ${r.code}: ${r.stderr} ${r.stdout.slice(0, 200)}`); return null; }
+    const out = JSON.parse(r.stdout);
+    if (out.is_error) { this.debug(`claude error: ${String(out.result).slice(0, 200)}`); return null; }
+    return out.structured_output ?? (typeof out.result === "string" ? JSON.parse(out.result) : null);
+  }
+
+  // `codex exec` with the same schema: the schema goes to a file (that is how codex takes it)
+  // and the answer is the last JSON line it prints. stdin is closed, or codex waits on it.
+  async askCodex(prompt) {
+    const schema = `${appHome()}/asks-schema.json`;
+    const model = this.config?.codex_model ? ["-m", this.config.codex_model] : [];
+    const bin = await this.codexBin();
+    if (!bin) { this.debug("codex: not found"); return null; }
+    const r = await exec("sh", ["-c", 'printf "%s" "$1" > "$2" || exit 1; bin="$3"; schema="$2"; prompt="$4"; shift 4; exec "$bin" exec --ephemeral --skip-git-repo-check -s read-only --output-schema "$schema" "$@" "$prompt" < /dev/null', "asks", SCHEMA, schema, bin, prompt, ...model]);
+    if (r.code !== 0) { this.debug(`codex exit ${r.code}: ${one(r.stderr).slice(0, 200)} ${one(r.stdout).slice(0, 200)}`); return null; }
+    const lines = r.stdout.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("{"));
+    for (let i = lines.length - 1; i >= 0; i--) { try { return JSON.parse(lines[i]); } catch {} }
+    this.debug(`codex gave no JSON: ${one(r.stdout).slice(0, 200)}`);
+    return null;
   }
 }

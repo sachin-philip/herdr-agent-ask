@@ -1,0 +1,40 @@
+❯ Now ask me, as plain text (no tool), three short numbered questions about the todo
+  app, each with three bullet options, marking one option per question as recommended.
+  Then stop and wait.
+
+⏺ Here are three questions about the todo app. I've marked one recommended option in
+  each.
+
+  1. Who uses the todo app?
+     - Just you, on one machine (recommended)
+     - Several people on a shared machine
+     - Several people across different machines
+  2. Which interface do you want first?
+     - Command line (recommended)
+     - Web page
+     - Desktop window
+  3. How should completed tasks be handled?
+     - Keep them visible, marked as done (recommended)
+     - Move them to a separate archive list
+     - Delete them when completed
+
+✻ Sautéed for 2s · done 10:06 PM
+
+❯ Use the AskUserQuestion tool to ask me which colour the heading should be: Green, Red
+  or Blue. Recommend Green.
+────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Heading colour
+
+Which colour should the heading be?
+
+❯ 1. Green (Recommended)
+     Recommended colour for the heading.
+  2. Red
+     Use red for the heading.
+  3. Blue
+     Use blue for the heading.
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

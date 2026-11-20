@@ -21,7 +21,7 @@ export default class Tabs extends View {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     this.engine = new Engine();
-    const config = (cx) => cx.spawn(async (cx) => { this.engine.config = await loadConfig(); cx.notify(); });
+    const config = (cx) => cx.spawn(async (cx) => { this.engine.config = await loadConfig(); this.engine._backend = undefined; this.engine._codex = undefined; cx.notify(); });
     config(cx);
     cx.timer.every(30000, config);
     cx.timer.every(1000, (cx) => this.engine.tick(cx));
@@ -116,7 +116,7 @@ export default class Tabs extends View {
         .when(Boolean(badge), el => el.child(badge));
     };
     // Pending asks: a count for the shown space, and a dim one when other spaces have some too.
-    const pending = readState().asks.filter(a => a.state === "pending");
+    const pending = readState().asks.filter(a => a.state === "pending" && !a.notice);
     const here = pending.filter(a => a.space === (space?.id ?? focused()?.space)).length, elsewhere = pending.length - here;
     const badge = pending.length ? h_flex().gap(3).items_center()
       .when(here > 0, el => el.child(div().h(16).min_w(16).px(5).rounded(8).flex().items_center().justify_center().text_size(10.5).font_semibold().bg(t.blocked).text_color(t.background).child(String(here))))

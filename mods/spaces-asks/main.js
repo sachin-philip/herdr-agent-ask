@@ -2,7 +2,8 @@
 // asks its agents are waiting on, from the asks.state shared by mods/tabs-asks.
 // Workspace spaces: stable colored avatars, worktrees under their checkout,
 // grouped by machine when more than one is known (`group_spaces_by_machine: false` in
-// asks.json: one flat list). After a space's name, the repo
+// asks.json: one flat list, where a space on another machine ends its row with that
+// machine's name, dim, unless `show_machine_names: false`). After a space's name, the repo
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
@@ -77,16 +78,21 @@ export default class Spaces extends View {
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
-    // asks.json: `group_spaces_by_machine: false` gives one flat list, no header per machine.
+    // asks.json: `group_spaces_by_machine: false` gives one flat list, no header per machine;
+    // there `show_machine_names: false` also leaves the machine's name off a space's row.
     // Read again every 30 s, like the other two mods' config.
     this.group = true;
+    this.names = true;
     const config = (cx) => cx.spawn(async (cx) => {
-      const was = this.group;
+      const was = [this.group, this.names];
+      let cfg = {};
       try {
         const text = await readTextFile(`${appHome()}/asks.json`);
-        this.group = (text ? JSON.parse(text) : {}).group_spaces_by_machine !== false;
-      } catch { this.group = true; }
-      if (this.group !== was) cx.notify();
+        cfg = (text ? JSON.parse(text) : null) ?? {};
+      } catch {}
+      this.group = cfg.group_spaces_by_machine !== false;
+      this.names = cfg.show_machine_names !== false;
+      if (this.group !== was[0] || this.names !== was[1]) cx.notify();
     });
     config(cx);
     cx.timer.every(30000, config);
@@ -391,6 +397,17 @@ export default class Spaces extends View {
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
+  // The end of a row: git's tail, then, in the flat list, the machine a space on another
+  // machine is on, dim, as the header over it would have said.
+  tail(g, tree, w, t) {
+    const host = !this.group && this.names ? w.machine : null;
+    if (!host) return g ? this.gitTail(g, tree, w.name, t) : div().flex_1();
+    const end = g ? this.gitTail(g, tree, w.name, t) : h_flex().flex_1().min_w(0).justify_end().items_center().text_size(11.5).text_color(t.dim);
+    return end.child(h_flex().flex_none().gap(3).items_center().max_w(96).text_color(t.dim)
+      .child(svg("mods/workspace-chrome/server.svg").size(11).flex_none().text_color(t.dim))
+      .child(div().min_w(0).truncate().child(host)));
+  }
+
   row({ w, i, g, tree }, t) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
@@ -445,7 +462,7 @@ export default class Spaces extends View {
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
           .when(waiting(w.id) > 0, (el) => el.child(pill(waiting(w.id), t)))
-          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
+          .child(this.tail(g, tree, w, t)),
       );
   }
 

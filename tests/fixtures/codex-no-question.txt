@@ -1,0 +1,27 @@
+› qn and list of answers
+
+
+• Question: What would you like Herdr to help you do?
+
+  Answers:
+
+  • Track what each agent is working on
+  • Find and answer open questions
+  • Review changes before they’re applied
+  • Coordinate work across several agents
+
+  Worked for 1s • 9:15 PM
+
+
+› Track what each agent is working on
+
+
+• Got it — you’d like Herdr to track what each agent is working on.
+
+  Worked for 2s • 9:19 PM
+                                                     ⚠ weekly limit: 10% left · /status
+
+› Ask Codex to do anything
+
+  GPT-6-Luna medium · ~/Code/labs/herdr-openqn · Verify Codex authorship
+  ← for agents · ? for shortcuts                              ⚠ 2 warnings · f2 to view

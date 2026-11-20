@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Haiku 5.5 · Claude Ultra
+ ▝▝   ▝▝   ~/Code/labs/herdr-openqn
+
+
+❯ Ask me, as plain text (no tool), whether the todo app should store tasks in SQLite or
+  in a JSON file. Recommend SQLite. List both answers. Then stop and wait.
+
+⏺ Before I ask, one thing to note: this is a question for you, so I'm not changing
+  anything in the repo.
+
+  Should the todo app store tasks in SQLite or in a JSON file?
+
+  My recommendation: SQLite. It gives you atomic writes, safe concurrent access, indexed
+  queries, and room to grow without rewriting storage. A JSON file is simpler to set up
+  and easier to inspect by hand, but it gets fragile as the data or the number of
+  writers grows.
+
+  Here are both options:
+
+  1. SQLite: a single database file with a schema. Good for reliability and querying. It
+     adds a dependency and a little setup.
+  2. JSON file: the whole task list in one human-readable file. Good for zero
+     dependencies and easy hand-editing. It has no transactions, so a crash mid-write
+     can corrupt data, and every change rewrites the whole file.
+
+  Which do you want?
+
+✻ Brewed for 3s · done 10:06 PM
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ harness-view: harness: no runs yet
+  ⏵⏵ auto mode on (shift+tab to cycle) · install gh for PR status

@@ -16,7 +16,7 @@ tab bar and spaces list pointed at the two clones and the panel added, so copyin
 and the three mods and switching to it is all it takes. To keep a layout of your own instead,
 run `node install.mjs`, which clones the layout you are showing and makes the same three
 changes to the clone. Before adding it, know that it runs `hc` to read and answer terminals,
-`claude -p` for plain-text questions, and a shell to append to `docs/decisions.md`.
+`claude -p` for plain-text questions, and a shell to append to the decisions log.
 
 ## What you see
 
@@ -32,20 +32,26 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   a 20 px `All` toggle chip.
 - A dim line: `N waiting · M answered today`.
 - Cards, 12 px padding, `t.surface`, 10 px radius, 8 px apart, newest first:
-  1. the agent's program icon (16 px), its sidebar name semibold, the space name when `All` is on,
-     a spinner while sending, the age (`<1m`, `3m`, `2h`).
+  1. the agent's program icon (16 px), its sidebar name semibold, the space name when `All` is on
+     (beside the name when both fit, else on the next line), a spinner while sending, the age
+     (`<1m`, `3m`, `2h`). Every text on a card wraps in the card's width and is never cut
+     short; a row whose text can run to several lines aligns to its first line, so its badge,
+     chip or icon stays level with it.
   2. a kind chip, 16 px, 10 px semibold uppercase on a colour: `APPROVAL` on `t.blocked`,
-     `DECISION` on `t.accent`, `QUESTION` on `t.working`, `UNCLEAR` on `t.dim`; then the context
-     line (the agent's last prose line this turn) in `t.dim`, truncated.
+     `DECISION` on `t.accent`, `QUESTION` on `t.working`, `STOPPED` on `t.blocked`, `UNCLEAR` on `t.dim`; then the context
+     line (the agent's last prose line this turn) in `t.dim`: one line cut with an ellipsis; a
+     click on the row opens it in full, running on from the chip with its next lines at the
+     card's edge, and another click closes it.
   3. the question, 13 px, wrapping.
-  4. one row per option: an 18 px number badge, the label verbatim (truncated, full text in the
-     tooltip), `recommends` in `t.accent` on the option the agent recommended (its border is
-     `t.accent` too), and the option's description under it in `t.dim`.
+  4. one row per option: an 18 px number badge, the label verbatim (wrapping), `recommends` in
+     `t.accent` on the option the agent recommended (its border is `t.accent` too), and the
+     option's description under it in `t.dim`, wrapping.
   5. actions, 26 px: `Other answer` (toggles a text input; Enter sends), `Open terminal`, and
      `Dismiss` at the right. A failed card shows the error in `t.blocked` and a `Retry` button.
-- Under the cards, a foldable `Answered N` list: one 26 px row per answered, stale or failed
-  ask: a check (or x), the agent, `→ answer` or the note (`Resolved in terminal`, `Agent
-  closed`), the age. Clicking a row focuses that agent.
+- Under the cards, a foldable `Answered N` list: one row (26 px or taller) per answered, stale
+  or failed ask: a check (or x), the agent (one line, at most 90 px, in full on hover), `→ answer`
+  or the note (`Resolved in terminal`, `Agent closed`), wrapping, the age. Clicking a row
+  focuses that agent.
 - A card for a message with several questions lists them as numbered rows under a one-line
   summary. Clicking a row unfolds the choices the agent gave for that question (its recommended
   one marked) and an `Other answer…` line; a pick turns the row's badge `t.accent` and shows
@@ -66,9 +72,23 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   `APPROVAL` whose options (`Yes`, `Yes, and …`, `No`) come from the screen. Right after, the
   screen (`hc read <t> --json`) is read for option numbers, descriptions, the question line above
   a permission prompt, and the context line.
+- Stopped turns: a terminal whose status is `error` (`{state: "error", msg: "API Error:
+  Connection refused …"}`, Claude Code after its retries) gets one card per turn
+  (`address:e:turn`): kind `STOPPED`, the report's `msg` as the question, `delivery: "send"`,
+  `stopped: true` and one option `{label: "Continue", send: "continue"}`; an option's `send` is
+  the message behind a button whose label is not the message. The card is open while the
+  terminal reports `error` on that turn (`stillIdle` allows `error` for a `stopped` card), goes
+  `Continued in terminal` 3 s after it does not; `asks.accept` presses its `Continue`. A logged-out agent
+  reports `{state: "blocked", kind: "auth", msg: "Please run /login · …"}`: `parseReport` makes
+  that a `STOPPED` card with no options, and the screen is not read for it. No model either way.
 - Finished turns: every `done` or `idle` turn is checked once (`address:p:turn`, remembered in
   the shared state's `checked`, the first pass skipping turns already idle). The agent's words
-  since the person's last `❯` prompt are taken (tool lines and the `✻ … done` footer dropped);
+  since the person's last prompt are taken: for Claude Code the last `❯` prompt (tool lines and
+  the `✻ … done` footer dropped); for Codex (`parseCodexMessage`) the last `›` prompt that has a
+  `•` line after it (the input box at the bottom is a `›` line too, `Ask Codex to do anything`
+  or text typed but not sent), `•` tool bullets (`Ran`, `Explored`, `Called`, `Edited`…) and
+  their `└` output dropped, stopping at the `Worked for 4s • 9:14 PM` footer. The terminal's
+  reported `app` picks the format; without one, Claude Code's is tried, then Codex's;
   with a `?` in them, `claude -p` (`mode: message`) says whether the agent is waiting on the
   person (`asks`), the main question (`(+N more)` for several), any options it laid out, and a
   context line. `asks` true and confidence ≥ 0.6 make a `QUESTION` card with `delivery: "send"`.
@@ -97,12 +117,27 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   for ~3 s. The button reads `Answer` when there are no options.
 - `Other answer`: `hc send --force <t> "<text>"` while the dialog is up (Claude Code's question
   dialog takes typed text as the answer); `hc send --if idle` otherwise. Same 8 s poll.
+- `hc send --json` says whether the message `started` a turn. Codex sometimes drops a paste
+  outright (seen on fresh agents right after a turn, about one send in three, not reproducible
+  on demand): on `started: false` the panel reads the screen; the text on a prompt line
+  (`› Spaces`, not anywhere on screen, since a short answer is usually in the question too)
+  means Enter did not submit, so `hc keys enter`; otherwise `hc send --force` once more. One
+  extra attempt at most.
 - A `failed` card remembers `sent_turn`. Retry first checks the turn: moved on means the earlier
   answer landed late, so the card becomes delivered ("Picked up late") instead of sending twice.
-  The engine's tick does the same for failed cards whose agent moved on.
-- Delivered: the card collapses into the Answered list and one line is appended to
-  `<agent cwd>/docs/decisions.md`:
-  `- 2026-11-07 22:41 · asks-test · DECISION · Which font should the heading use? → Geist (Recommended)`.
+  The engine's tick does the same; a failed card whose agent is gone becomes `Agent closed`, and
+  one with no reaction for ten minutes becomes `Not delivered` in the Answered list. `Open
+  terminal` on a closed agent marks the card `Agent closed` instead of a failed-command toast.
+- The classifier backend (`Engine.backend`): `classifier` in asks.json, or `auto` = `claude` on
+  PATH, else the newest `codex` among PATH, Homebrew, /usr/local and `~/.local/bin`
+  (`Engine.codexBin`; Codex's installer leaves old copies that reject newer model names), else
+  none plus a one-time notice. `askCodex` writes the schema to `asks-schema.json`, runs
+  `codex exec --ephemeral --skip-git-repo-check -s read-only --output-schema … < /dev/null`
+  (stdin must be closed or codex waits on it) and takes the last JSON line.
+- Delivered: the card collapses into the Answered list and one line is appended to the
+  decisions log, by default `~/.config/herdr-app/decisions/<space>.md` (`log` in asks.json;
+  `{space}`, `{repo}`, `~/`, absolute, or relative to the agent's folder):
+  `- 2026-11-07 22:41 · asks-test @ demo · DECISION · Which font should the heading use? → Geist (Recommended)`.
   Dismissed and stale cards are not logged.
 - A pending ask whose agent is no longer blocked, shows another dialog, or is gone becomes stale
   (`Resolved in terminal` / `Agent closed`). Finished cards are kept 24 h, at most 60 in all.
@@ -119,13 +154,29 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   always present (the enabled list is `shared("workspace.panels")` plus `asks`), the badge,
   `togglePanel`, a `nextCommand()` loop (`toggle`, `open`), and an `Engine` created in `init`,
   ticked by `cx.timer.every(2000)` and from `render`. Its `win-*.svg` are copies of the shipped ones.
-- `mods/tabs-asks/engine.js`: `parseReport`, `parseScreen`, `parseLastMessage`, `normalize`,
-  `Engine.tick` (diff `terminals()` against the shared state; finished-turn pass),
-  `Engine.enrich` (screen read, model fallback), `Engine.checkTurn`, `Engine.classify` (two
-  prompt modes, `dialog` and `message`), `Engine.recheck` (`tabs-asks.recheck`).
+- `mods/tabs-asks/parse.js`: the pure parts, no Herdr import: `parseReport`, `parseScreen`,
+  `parseLastMessage` (`parseClaudeMessage`, `parseCodexMessage`), `normalize`, `SCHEMA`.
+  `node --test` runs `tests/*.test.mjs` against screens in `tests/fixtures` (captured with
+  `hc read <t> --json --lines 100`), and GitHub Actions runs it on every PR.
+- `mods/tabs-asks/engine.js`: `Engine.tick` (diff `terminals()` against the shared state;
+  finished-turn pass; failed-card healing), `Engine.enrich` (screen read, model fallback),
+  `Engine.checkTurn`, `Engine.classify` (two prompt modes, `dialog` and `message`),
+  `Engine.backend` / `Engine.codexBin` / `askClaude` / `askCodex`, `Engine.recheck`
+  (`tabs-asks.recheck`).
+  With no CLI, `backend()` puts one `NOTICE` card (`notice: true`, no space, shown in every
+  space, Dismiss only, never counted in badges, skipped by the stale pass) and removes it once a
+  CLI is found.
+- `tests/herdr-stub.mjs` stands in for the `herdr` module (registered by `tests/register.mjs`);
+  tests steer it through `globalThis.__herdr` (exec/hc handlers, terminals, an in-memory shared
+  store), which is how `tests/classifier.test.mjs` runs the engine's backend choice and `tick`
+  without the app.
+- `scripts/check-mods.sh` loads the three mods in `herdr-app check`; `scripts/e2e.py` runs the
+  live matrix (Claude alone, Codex alone, both) against the open window.
 - `mods/spaces-asks/main.js`: Herdr's shipped `spaces` mod (0.1.13) with `waiting(spaceId)` over
   `shared("asks.state")` and a count pill in `row` and `compact`; `grouped` skips the machine
-  headers when `group_spaces_by_machine` is `false` in asks.json (read in `init`, every 30 s).
+  headers when `group_spaces_by_machine` is `false` in asks.json (read in `init`, every 30 s),
+  and `tail` then ends a row from another machine with its name unless `show_machine_names` is
+  `false`.
 - `mods/asks/main.js`: the panel. `answer`, `sendText`, `deliver`, `log`, `retry`, `open`, `card`,
   `receipt`, `render`. One `InputState` made in `init`, shown under whichever card has
   `Other answer` open.
@@ -173,7 +224,7 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   1 s tick turn such cards stale. A key pressed by the panel after the dialog closed would land in the
   agent's prompt line, which is why the check happens right before `hc keys`.
 - Claude Code's permission dialog option 2 is long (`Yes, and switch to accept edits … (shift+tab)`):
-  it is shown truncated with the full text in the tooltip, never shortened in the data.
+  it wraps onto a second line, never shortened in the data.
 - The `❯` cursor line's label is what the person has typed into Claude Code's free-text option
   (e.g. `4. default gre`); it is parsed as an option only when the numbering runs from 1, and the
   report's options win over the screen's labels.
@@ -218,7 +269,7 @@ changes to the clone. Before adding it, know that it runs `hc` to read and answe
   Red, Green, Blue; recommend Green"` puts a `DECISION` card in that space's panel within 2 s,
   options `1 Green (Recommended)` (marked), `2 Red`, `3 Blue`, and `Asks 1` in the tab bar.
 - Clicking `Red` makes the agent's screen say `→ Red` within 3 s, the card moves to `Answered`
-  with `→ Red`, and `<cwd>/docs/decisions.md` gains the line.
+  with `→ Red`, and `~/.config/herdr-app/decisions/<space>.md` gains the line.
 - Answering the dialog in the terminal instead turns the card into `Resolved in terminal`.
 - `Other answer` + `Tabler icons instead` + Enter: the agent reports that free-text answer.
 - A `claude --permission-mode default` agent asked to write a file shows an `APPROVAL` card
